@@ -1,0 +1,285 @@
+/**
+ * @file context/GameContext.tsx
+ * @created 2025-10-16
+ * @overview Global game state management using React Context
+ * 
+ * OVERVIEW:
+ * Provides centralized state management for player data, current tile,
+ * and game session. Makes data available to all components without prop drilling.
+ */
+
+'use client';
+
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { Player, Tile, MovementDirection } from '@/types';
+import { logger } from '@/lib/logger';
+
+/**
+ * Game context state interface
+ */
+interface GameContextState {
+  player: Player | null;
+  currentTile: Tile | null;
+  isLoading: boolean;
+  error: string | null;
+  setPlayer: (player: Player | null) => void;
+  setCurrentTile: (tile: Tile | null) => void;
+  updateTileOnly: (x: number, y: number) => Promise<void>;
+  movePlayer: (direction: MovementDirection) => Promise<void>;
+  refreshGameState: () => Promise<void>;
+  refreshPlayer: () => Promise<void>;
+  logout: () => void;
+}
+
+/**
+ * Create game context with default values
+ */
+const GameContext = createContext<GameContextState | undefined>(undefined);
+
+/**
+ * Game context provider props
+ */
+interface GameProviderProps {
+  children: ReactNode;
+}
+
+/**
+ * Game Context Provider Component
+ * 
+ * Wraps the application and provides game state to all children
+ * 
+ * @example
+ * ```tsx
+ * <GameProvider>
+ *   <App />
+ * </GameProvider>
+ * ```
+ */
+export function GameProvider({ children }: GameProviderProps) {
+  const [player, setPlayer] = useState<Player | null>(null);
+  const [currentTile, setCurrentTile] = useState<Tile | null>(null);
+  const [isLoading, setIsLoading] = useState(true); // Start as true to check auth
+  const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Check session with server (works with HttpOnly cookies)
+   * Server-side endpoint can read HttpOnly cookies that JavaScript cannot access
+   */
+  useEffect(() => {
+    async function checkSession() {
+      try {
+        logger.debug('Checking session');
+        const response = await fetch('/api/auth/session');
+        const data = await response.json();
+        
+        logger.debug('Session response received', { success: data.success, hasUsername: !!data.username });
+        
+        if (data.success && data.username) {
+          // Valid session found - load player data
+          logger.info('Valid session found', { username: data.username });
+          await loadPlayerData(data.username);
+        } else {
+          // No valid session - user needs to login
+          logger.debug('No valid session, user needs to login');
+          setIsLoading(false);
+        }
+      } catch (error) {
+        logger.error('Session check failed', error instanceof Error ? error : new Error(String(error)));
+        setIsLoading(false);
+      }
+    }
+    
+    checkSession();
+  }, []);
+
+  /**
+   * Save username to localStorage when player changes (for backward compatibility)
+   */
+  useEffect(() => {
+    if (player) {
+      localStorage.setItem('darkframe_username', player.username);
+    } else {
+      localStorage.removeItem('darkframe_username');
+    }
+  }, [player]);
+
+  /**
+   * Load player data from API
+   */
+  async function loadPlayerData(username: string) {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`/api/player?username=${encodeURIComponent(username)}`);
+      const data = await response.json();
+
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to load player data');
+      }
+
+      setPlayer(data.data);
+
+      // Load current tile
+      if (data.data.currentPosition) {
+        await loadTileData(data.data.currentPosition.x, data.data.currentPosition.y);
+      }
+    } catch (err) {
+      logger.error('Error loading player data', err instanceof Error ? err : new Error(String(err)));
+      setError(err instanceof Error ? err.message : 'Failed to load player');
+      setPlayer(null);
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  /**
+   * Load tile data from API
+   */
+  async function loadTileData(x: number, y: number) {
+    try {
+      const response = await fetch(`/api/tile?x=${x}&y=${y}`);
+      const data = await response.json();
+
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to load tile data');
+      }
+
+      setCurrentTile(data.data);
+    } catch (err) {
+      logger.error('Error loading tile data', err instanceof Error ? err : new Error(String(err)));
+      setError(err instanceof Error ? err.message : 'Failed to load tile');
+    }
+  }
+
+  /**
+   * Move player in specified direction
+   */
+  async function movePlayer(direction: MovementDirection) {
+    if (!player) {
+      setError('No player logged in');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/move', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          username: player.username,
+          direction,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to move');
+      }
+
+      setPlayer(data.data.player);
+      setCurrentTile(data.data.currentTile);
+    } catch (err) {
+      logger.error('Error moving player', err instanceof Error ? err : new Error(String(err)));
+      setError(err instanceof Error ? err.message : 'Failed to move');
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  /**
+   * Refresh current game state
+   */
+  async function refreshGameState() {
+    if (player) {
+      await loadPlayerData(player.username);
+    }
+  }
+
+  /**
+   * Refresh only player data (lightweight)
+   */
+  async function refreshPlayer() {
+    if (!player) return;
+    
+    try {
+      await loadPlayerData(player.username);
+    } catch (error) {
+      logger.error('Failed to refresh player', error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  /**
+   * Update only the current tile without refreshing player data
+   * Useful for auto-farm to update tile visuals without destroying timers
+   */
+  async function updateTileOnly(x: number, y: number) {
+    try {
+      const response = await fetch(`/api/tile?x=${x}&y=${y}`);
+      const data = await response.json();
+      
+      if (data.success && data.data) {
+        setCurrentTile(data.data);
+      }
+    } catch (error) {
+      logger.error('Failed to update tile', error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  /**
+   * Logout and clear session
+   */
+  function logout() {
+    setPlayer(null);
+    setCurrentTile(null);
+    setError(null);
+    localStorage.removeItem('darkframe_username');
+  }
+
+  const value: GameContextState = {
+    player,
+    currentTile,
+    isLoading,
+    error,
+    setPlayer,
+    setCurrentTile,
+    updateTileOnly,
+    movePlayer,
+    refreshGameState,
+    refreshPlayer,
+    logout,
+  };
+
+  return <GameContext.Provider value={value}>{children}</GameContext.Provider>;
+}
+
+/**
+ * Hook to use game context
+ * 
+ * @returns Game context state
+ * @throws Error if used outside GameProvider
+ * 
+ * @example
+ * ```tsx
+ * function MyComponent() {
+ *   const { player, currentTile, movePlayer } = useGameContext();
+ *   // Use context values
+ * }
+ * ```
+ */
+export function useGameContext() {
+  const context = useContext(GameContext);
+  if (context === undefined) {
+    throw new Error('useGameContext must be used within a GameProvider');
+  }
+  return context;
+}
+
+// ============================================================
+// END OF FILE
+// ============================================================

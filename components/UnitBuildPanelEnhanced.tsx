@@ -1,0 +1,608 @@
+/**
+ * UnitBuildPanelEnhanced.tsx
+ * Created: 2025-10-17
+ * 
+ * OVERVIEW:
+ * Enhanced unit building interface with full 5-tier support. Displays units grouped
+ * by tiers with tabs, filtering by unlocked tiers, and visual indicators for locked units.
+ * 
+ * Features:
+ * - Tier tab navigation (Tier 1-5)
+ * - Lock icons for unavailable tiers
+ * - Unit cards showing tier, name, cost, STR/DEF stats
+ * - Build button disabled for locked tiers
+ * - Real-time resource and slot validation
+ * - Quantity input with bulk building
+ * - Factory slot management and regeneration display
+ * 
+ * Integration:
+ * - Fetches player's unlocked tiers from context
+ * - Calls /api/factory/build-unit for unit creation
+ * - Filters units using getAvailableUnits() helper
+ * - Displays 8 units per tier (4 STR, 4 DEF)
+ * 
+ * Dependencies: useGameContext, UNIT_CONFIGS, getAvailableUnits, UnitTier enum
+ */
+
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useGameContext } from '@/context/GameContext';
+import { Resources, UnitType, UnitTier, UNIT_CONFIGS, getUnitsForTier } from '@/types/game.types';
+
+interface UnitBuildPanelEnhancedProps {
+  isOpen: boolean;
+  onClose: () => void;
+  factoryX: number;
+  factoryY: number;
+  playerResources: Resources;
+  availableSlots: number;
+  maxSlots: number;
+  usedSlots: number;
+  onBuildComplete: () => void;
+}
+
+/**
+ * Enhanced unit building panel with tier support
+ * Allows players to build units from unlocked tiers only
+ */
+export default function UnitBuildPanelEnhanced({
+  isOpen,
+  onClose,
+  factoryX,
+  factoryY,
+  playerResources,
+  availableSlots,
+  maxSlots,
+  usedSlots,
+  onBuildComplete
+}: UnitBuildPanelEnhancedProps) {
+  const { player } = useGameContext();
+  const [selectedTier, setSelectedTier] = useState<UnitTier>(UnitTier.Tier1);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [quantities, setQuantities] = useState<Record<UnitType, string>>({} as Record<UnitType, string>);
+
+  // Initialize quantities for all units
+  useEffect(() => {
+    const initialQuantities: Record<UnitType, string> = {} as Record<UnitType, string>;
+    Object.keys(UNIT_CONFIGS).forEach((unitType) => {
+      initialQuantities[unitType as UnitType] = '1';
+    });
+    setQuantities(initialQuantities);
+  }, []);
+
+  // Auto-select first unlocked tier on open
+  useEffect(() => {
+    if (isOpen && player?.unlockedTiers) {
+      const firstUnlocked = player.unlockedTiers.sort((a, b) => a - b)[0];
+      setSelectedTier(firstUnlocked as UnitTier);
+    }
+  }, [isOpen, player?.unlockedTiers]);
+
+  if (!isOpen) return null;
+
+  const unlockedTiers = player?.unlockedTiers || [UnitTier.Tier1];
+  const isTierUnlocked = (tier: UnitTier) => unlockedTiers.includes(tier);
+
+  /**
+   * Calculate maximum buildable quantity for a unit type
+   * Considers resource constraints (metal, energy) and slot availability
+   */
+  const calculateMaxBuildable = (unitType: UnitType): number => {
+    const config = UNIT_CONFIGS[unitType];
+    const maxByMetal = Math.floor(playerResources.metal / config.metalCost);
+    const maxByEnergy = Math.floor(playerResources.energy / config.energyCost);
+    const maxBySlots = Math.floor(availableSlots / config.slotCost);
+    return Math.min(maxByMetal, maxByEnergy, maxBySlots, 100); // Cap at 100
+  };
+
+  const handleBuild = async (unitType: UnitType, quantity?: number) => {
+    const buildQuantity = quantity || parseInt(quantities[unitType]) || 1;
+    
+    if (buildQuantity < 1 || buildQuantity > 100) {
+      setMessage('❌ Quantity must be between 1 and 100');
+      return;
+    }
+
+    setLoading(true);
+    setMessage('');
+
+    try {
+      const response = await fetch('/api/factory/build-unit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          factoryX,
+          factoryY,
+          unitType,
+          quantity: buildQuantity
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to build units');
+      }
+
+      setMessage(data.message);
+      onBuildComplete();
+
+    } catch (error) {
+      console.error('Build error:', error);
+      setMessage(error instanceof Error ? error.message : 'Failed to build units');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getTierColor = (tier: UnitTier): string => {
+    switch (tier) {
+      case UnitTier.Tier1: return 'border-gray-500 bg-gray-800/50';
+      case UnitTier.Tier2: return 'border-green-500 bg-green-900/30';
+      case UnitTier.Tier3: return 'border-blue-500 bg-blue-900/30';
+      case UnitTier.Tier4: return 'border-purple-500 bg-purple-900/30';
+      case UnitTier.Tier5: return 'border-yellow-500 bg-yellow-900/30';
+      default: return 'border-gray-500 bg-gray-800/50';
+    }
+  };
+
+  const getTierIcon = (tier: UnitTier): string => {
+    switch (tier) {
+      case UnitTier.Tier1: return '⚔️';
+      case UnitTier.Tier2: return '🛡️';
+      case UnitTier.Tier3: return '🏹';
+      case UnitTier.Tier4: return '🔥';
+      case UnitTier.Tier5: return '⚡';
+      default: return '🎖️';
+    }
+  };
+
+  // Get units for selected tier
+  const tierUnits = getUnitsForTier(selectedTier); // Returns UnitConfig[]
+  const offensiveUnits = tierUnits.filter((config) => {
+    return config.strength > config.defense; // Offensive = more STR than DEF
+  });
+  const defensiveUnits = tierUnits.filter((config) => {
+    return config.defense >= config.strength; // Defensive = more DEF than STR (or equal)
+  });
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+      <div className="bg-gray-900 border-2 border-orange-500 rounded-xl max-w-6xl w-full max-h-[90vh] overflow-y-auto">
+        {/* Header */}
+        <div className="bg-orange-600 p-4 flex justify-between items-center sticky top-0 z-10">
+          <h2 className="text-2xl font-bold text-white">🏭 Unit Production Facility</h2>
+          <button
+            onClick={onClose}
+            className="text-white hover:text-red-300 text-2xl font-bold"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="p-6">
+          {/* Factory Info */}
+          <div className="bg-gray-800 rounded-lg p-4 mb-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
+              <div>
+                <p className="text-gray-400 text-sm">Location</p>
+                <p className="text-white font-bold">({factoryX}, {factoryY})</p>
+              </div>
+              <div>
+                <p className="text-gray-400 text-sm">Available Slots</p>
+                <p className={`font-bold text-xl ${availableSlots > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {availableSlots} / {maxSlots}
+                </p>
+              </div>
+              <div>
+                <p className="text-gray-400 text-sm">Metal</p>
+                <p className="text-yellow-400 font-bold">⚙️ {playerResources.metal.toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-gray-400 text-sm">Energy</p>
+                <p className="text-cyan-400 font-bold">⚡ {playerResources.energy.toLocaleString()}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Tier Tabs */}
+          <div className="flex gap-2 mb-6 overflow-x-auto pb-2">
+            {[UnitTier.Tier1, UnitTier.Tier2, UnitTier.Tier3, UnitTier.Tier4, UnitTier.Tier5].map((tier) => {
+              const unlocked = isTierUnlocked(tier);
+              const isSelected = selectedTier === tier;
+              
+              return (
+                <button
+                  key={tier}
+                  onClick={() => unlocked && setSelectedTier(tier)}
+                  disabled={!unlocked}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold transition-all whitespace-nowrap ${
+                    isSelected
+                      ? getTierColor(tier).replace('bg-', 'bg-').replace('/30', '/60') + ' border-2'
+                      : unlocked
+                      ? 'bg-gray-700 hover:bg-gray-600 border border-gray-600'
+                      : 'bg-gray-800 border border-gray-700 opacity-50 cursor-not-allowed'
+                  }`}
+                >
+                  <span className="text-xl">{getTierIcon(tier)}</span>
+                  <span className={unlocked ? 'text-white' : 'text-gray-500'}>
+                    Tier {tier}
+                  </span>
+                  {!unlocked && <span className="text-red-400">🔒</span>}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Tier Status Message */}
+          {!isTierUnlocked(selectedTier) && (
+            <div className="bg-red-900/30 border border-red-500 rounded-lg p-4 mb-6">
+              <p className="text-red-400 font-bold">🔒 Tier {selectedTier} is locked!</p>
+              <p className="text-red-300 text-sm mt-2">
+                Visit the Research Panel to unlock this tier using Research Points (RP).
+              </p>
+            </div>
+          )}
+
+          {/* Unit Grid - Offensive */}
+          <div className="mb-6">
+            <h3 className="text-xl font-bold text-orange-400 mb-3">⚔️ Offensive Units</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {offensiveUnits.map((config) => {
+                const unitType = config.type; // Extract UnitType from UnitConfig
+                const quantity = parseInt(quantities[unitType]) || 1;
+                const totalMetal = config.metalCost * quantity;
+                const totalEnergy = config.energyCost * quantity;
+                const totalSlots = config.slotCost * quantity;
+                
+                const affordable = playerResources.metal >= totalMetal && playerResources.energy >= totalEnergy;
+                const enoughSlots = availableSlots >= totalSlots;
+                const canBuild = affordable && enoughSlots && !loading && isTierUnlocked(selectedTier);
+
+                return (
+                  <div key={unitType} className={`border-2 rounded-lg p-4 ${getTierColor(selectedTier)}`}>
+                    {/* Unit Header */}
+                    <div className="text-center mb-3">
+                      <h4 className="text-lg font-bold text-white">{config.name}</h4>
+                      <p className="text-sm text-gray-400">Tier {selectedTier}</p>
+                    </div>
+
+                    {/* Stats */}
+                    <div className="bg-gray-800 rounded-lg p-3 mb-3 space-y-1">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-red-400">⚔️ STR:</span>
+                        <span className="text-white font-bold">{config.strength}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-blue-400">🛡️ DEF:</span>
+                        <span className="text-white font-bold">{config.defense}</span>
+                      </div>
+                    </div>
+
+                    {/* Costs */}
+                    <div className="bg-gray-700 rounded-lg p-2 mb-3 space-y-1 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Metal:</span>
+                        <span className={`font-bold ${playerResources.metal >= totalMetal ? 'text-yellow-400' : 'text-red-400'}`}>
+                          {totalMetal.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Energy:</span>
+                        <span className={`font-bold ${playerResources.energy >= totalEnergy ? 'text-cyan-400' : 'text-red-400'}`}>
+                          {totalEnergy.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Slots:</span>
+                        <span className={`font-bold ${availableSlots >= totalSlots ? 'text-green-400' : 'text-red-400'}`}>
+                          {totalSlots}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Quick Build Buttons */}
+                    <div className="grid grid-cols-3 gap-1 mb-2">
+                      {[1, 5, 10].map((qty) => {
+                        const maxBuildable = calculateMaxBuildable(unitType);
+                        const canBuildQty = qty <= maxBuildable && isTierUnlocked(selectedTier) && !loading;
+                        
+                        return (
+                          <button
+                            key={qty}
+                            onClick={() => handleBuild(unitType, qty)}
+                            disabled={!canBuildQty}
+                            className={`py-1 px-2 rounded text-xs font-bold ${
+                              canBuildQty
+                                ? 'bg-orange-600 hover:bg-orange-700 text-white'
+                                : 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                            }`}
+                          >
+                            {qty}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-1 mb-2">
+                      {/* Build 25 */}
+                      <button
+                        onClick={() => handleBuild(unitType, 25)}
+                        disabled={calculateMaxBuildable(unitType) < 25 || !isTierUnlocked(selectedTier) || loading}
+                        className={`py-1 px-2 rounded text-xs font-bold ${
+                          calculateMaxBuildable(unitType) >= 25 && isTierUnlocked(selectedTier) && !loading
+                            ? 'bg-orange-600 hover:bg-orange-700 text-white'
+                            : 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                        }`}
+                      >
+                        25
+                      </button>
+                      
+                      {/* Build Max */}
+                      <button
+                        onClick={() => {
+                          const max = calculateMaxBuildable(unitType);
+                          if (max > 0) handleBuild(unitType, max);
+                        }}
+                        disabled={calculateMaxBuildable(unitType) === 0 || !isTierUnlocked(selectedTier) || loading}
+                        className={`py-1 px-2 rounded text-xs font-bold ${
+                          calculateMaxBuildable(unitType) > 0 && isTierUnlocked(selectedTier) && !loading
+                            ? 'bg-green-600 hover:bg-green-700 text-white'
+                            : 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                        }`}
+                      >
+                        MAX ({calculateMaxBuildable(unitType)})
+                      </button>
+                    </div>
+
+                    {/* Custom Quantity Input (Optional) */}
+                    <div className="flex gap-1">
+                      <input
+                        type="number"
+                        value={quantities[unitType]}
+                        onChange={(e) => {
+                          const value = parseInt(e.target.value) || 1;
+                          const maxBuildable = calculateMaxBuildable(unitType);
+                          const clampedValue = Math.min(Math.max(1, value), maxBuildable, 100);
+                          setQuantities({ ...quantities, [unitType]: clampedValue.toString() });
+                        }}
+                        className="flex-1 bg-gray-600 text-white px-2 py-1 rounded text-xs border border-gray-500 focus:border-orange-500 focus:outline-none"
+                        min="1"
+                        max={Math.min(calculateMaxBuildable(unitType), 100)}
+                        placeholder="Custom"
+                        disabled={!isTierUnlocked(selectedTier)}
+                      />
+                      <button
+                        onClick={() => handleBuild(unitType)}
+                        disabled={!canBuild}
+                        className={`px-3 py-1 rounded text-xs font-bold ${
+                          canBuild
+                            ? 'bg-orange-500 hover:bg-orange-600 text-black'
+                            : 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                        }`}
+                      >
+                        {loading ? '...' : isTierUnlocked(selectedTier) ? 'Build' : '🔒'}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Unit Grid - Defensive */}
+          <div className="mb-6">
+            <h3 className="text-xl font-bold text-blue-400 mb-3">🛡️ Defensive Units</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {defensiveUnits.map((config) => {
+                const unitType = config.type; // Extract UnitType from UnitConfig
+                const quantity = parseInt(quantities[unitType]) || 1;
+                const totalMetal = config.metalCost * quantity;
+                const totalEnergy = config.energyCost * quantity;
+                const totalSlots = config.slotCost * quantity;
+                
+                const affordable = playerResources.metal >= totalMetal && playerResources.energy >= totalEnergy;
+                const enoughSlots = availableSlots >= totalSlots;
+                const canBuild = affordable && enoughSlots && !loading && isTierUnlocked(selectedTier);
+
+                return (
+                  <div key={unitType} className={`border-2 rounded-lg p-4 ${getTierColor(selectedTier)}`}>
+                    {/* Unit Header */}
+                    <div className="text-center mb-3">
+                      <h4 className="text-lg font-bold text-white">{config.name}</h4>
+                      <p className="text-sm text-gray-400">Tier {selectedTier}</p>
+                    </div>
+
+                    {/* Stats */}
+                    <div className="bg-gray-800 rounded-lg p-3 mb-3 space-y-1">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-red-400">⚔️ STR:</span>
+                        <span className="text-white font-bold">{config.strength}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-blue-400">🛡️ DEF:</span>
+                        <span className="text-white font-bold">{config.defense}</span>
+                      </div>
+                    </div>
+
+                    {/* Costs */}
+                    <div className="bg-gray-700 rounded-lg p-2 mb-3 space-y-1 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Metal:</span>
+                        <span className={`font-bold ${playerResources.metal >= totalMetal ? 'text-yellow-400' : 'text-red-400'}`}>
+                          {totalMetal.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Energy:</span>
+                        <span className={`font-bold ${playerResources.energy >= totalEnergy ? 'text-cyan-400' : 'text-red-400'}`}>
+                          {totalEnergy.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Slots:</span>
+                        <span className={`font-bold ${availableSlots >= totalSlots ? 'text-green-400' : 'text-red-400'}`}>
+                          {totalSlots}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Quick Build Buttons */}
+                    <div className="grid grid-cols-3 gap-1 mb-2">
+                      {[1, 5, 10].map((qty) => {
+                        const maxBuildable = calculateMaxBuildable(unitType);
+                        const canBuildQty = qty <= maxBuildable && isTierUnlocked(selectedTier) && !loading;
+                        
+                        return (
+                          <button
+                            key={qty}
+                            onClick={() => handleBuild(unitType, qty)}
+                            disabled={!canBuildQty}
+                            className={`py-1 px-2 rounded text-xs font-bold ${
+                              canBuildQty
+                                ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                                : 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                            }`}
+                          >
+                            {qty}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-1 mb-2">
+                      {/* Build 25 */}
+                      <button
+                        onClick={() => handleBuild(unitType, 25)}
+                        disabled={calculateMaxBuildable(unitType) < 25 || !isTierUnlocked(selectedTier) || loading}
+                        className={`py-1 px-2 rounded text-xs font-bold ${
+                          calculateMaxBuildable(unitType) >= 25 && isTierUnlocked(selectedTier) && !loading
+                            ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                            : 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                        }`}
+                      >
+                        25
+                      </button>
+                      
+                      {/* Build Max */}
+                      <button
+                        onClick={() => {
+                          const max = calculateMaxBuildable(unitType);
+                          if (max > 0) handleBuild(unitType, max);
+                        }}
+                        disabled={calculateMaxBuildable(unitType) === 0 || !isTierUnlocked(selectedTier) || loading}
+                        className={`py-1 px-2 rounded text-xs font-bold ${
+                          calculateMaxBuildable(unitType) > 0 && isTierUnlocked(selectedTier) && !loading
+                            ? 'bg-green-600 hover:bg-green-700 text-white'
+                            : 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                        }`}
+                      >
+                        MAX ({calculateMaxBuildable(unitType)})
+                      </button>
+                    </div>
+
+                    {/* Custom Quantity Input (Optional) */}
+                    <div className="flex gap-1">
+                      <input
+                        type="number"
+                        value={quantities[unitType]}
+                        onChange={(e) => {
+                          const value = parseInt(e.target.value) || 1;
+                          const maxBuildable = calculateMaxBuildable(unitType);
+                          const clampedValue = Math.min(Math.max(1, value), maxBuildable, 100);
+                          setQuantities({ ...quantities, [unitType]: clampedValue.toString() });
+                        }}
+                        className="flex-1 bg-gray-600 text-white px-2 py-1 rounded text-xs border border-gray-500 focus:border-blue-500 focus:outline-none"
+                        min="1"
+                        max={Math.min(calculateMaxBuildable(unitType), 100)}
+                        placeholder="Custom"
+                        disabled={!isTierUnlocked(selectedTier)}
+                      />
+                      <button
+                        onClick={() => handleBuild(unitType)}
+                        disabled={!canBuild}
+                        className={`px-3 py-1 rounded text-xs font-bold ${
+                          canBuild
+                            ? 'bg-blue-500 hover:bg-blue-600 text-black'
+                            : 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                        }`}
+                      >
+                        {loading ? '...' : isTierUnlocked(selectedTier) ? 'Build' : '🔒'}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Message */}
+          {message && (
+            <div className={`p-3 rounded mb-4 ${
+              message.includes('✅')
+                ? 'bg-green-900/50 text-green-300'
+                : 'bg-red-900/50 text-red-300'
+            }`}>
+              {message}
+            </div>
+          )}
+
+          {/* Info Box */}
+          <div className="bg-gray-800 rounded-lg p-4">
+            <p className="font-bold text-orange-400 mb-2">💡 Production Tips:</p>
+            <ul className="list-disc list-inside space-y-1 text-gray-300 text-sm">
+              <li>Unlock higher tiers using Research Points (RP) earned from leveling up</li>
+              <li>Higher tier units have significantly better stats but cost more resources</li>
+              <li>Factory slots regenerate at 1 slot/hour (max 10 slots)</li>
+              <li>Balance offensive (STR) and defensive (DEF) units for maximum effectiveness</li>
+              <li>Build quantities between 1-100 units at once</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * IMPLEMENTATION NOTES:
+ * 
+ * 1. TIER SYSTEM INTEGRATION:
+ *    - Displays 5 tier tabs with lock indicators
+ *    - Filters units by selected tier using getUnitsForTier()
+ *    - Validates tier unlock status from player.unlockedTiers
+ *    - Disables build buttons for locked tiers
+ * 
+ * 2. UNIT ORGANIZATION:
+ *    - 8 units per tier (4 offensive, 4 defensive)
+ *    - Separate grids for STR and DEF units
+ *    - Tier-specific color coding (gray→green→blue→purple→yellow)
+ *    - Visual tier icons (⚔️🛡️🏹🔥⚡)
+ * 
+ * 3. BUILD VALIDATION:
+ *    - Resource affordability check (metal + energy)
+ *    - Slot availability validation
+ *    - Tier unlock verification
+ *    - Quantity limits (1-100)
+ * 
+ * 4. USER EXPERIENCE:
+ *    - Auto-select first unlocked tier on open
+ *    - Real-time cost calculation with quantity
+ *    - Color-coded resource/slot indicators
+ *    - Clear locked tier messaging
+ *    - Responsive grid layout
+ * 
+ * 5. INTEGRATION POINTS:
+ *    - GameContext: player.unlockedTiers
+ *    - API: /api/factory/build-unit (existing endpoint)
+ *    - Types: UNIT_CONFIGS, getUnitsForTier(), UnitTier enum
+ *    - Callbacks: onBuildComplete() for refresh
+ * 
+ * FUTURE ENHANCEMENTS:
+ * - Unit preview tooltips with detailed stats
+ * - Build queue system for multiple unit types
+ * - Preset army configurations (quick build)
+ * - Unit upgrade system (enhance existing units)
+ */

@@ -1,0 +1,707 @@
+/**
+ * Clan Research Service
+ * 
+ * Created: 2025-10-18
+ * 
+ * OVERVIEW:
+ * Manages clan research system with 4-branch technology tree (Industrial, Military,
+ * Economic, Social). Handles RP contributions, research unlocking, prerequisite
+ * validation, and bonus calculations. Provides 15+ technology nodes with progressive
+ * unlocking and cumulative bonuses.
+ * 
+ * Features:
+ * - 4 research branches with tier-based progression
+ * - RP contribution system (player → clan pool)
+ * - Research unlocking with prerequisites and level requirements
+ * - Total bonus calculation from all unlocked research
+ * - Recommended research based on clan stats
+ * - Progress tracking per branch
+ * 
+ * Integration:
+ * - MongoDB collections: clans, clan_activities
+ * - Activity logging for contributions and unlocks
+ * - Permission validation (contributions: all, unlocks: Leader/Officer)
+ * 
+ * @module lib/clanResearchService
+ */
+
+import { MongoClient, Db, ObjectId } from 'mongodb';
+
+let client: MongoClient;
+let db: Db;
+
+/**
+ * Initialize the clan research service with database connection
+ * MUST be called before using any service functions
+ * 
+ * @param mongoClient - MongoDB client instance
+ * @param database - Database instance
+ */
+export function initializeClanResearchService(mongoClient: MongoClient, database: Db): void {
+  client = mongoClient;
+  db = database;
+}
+
+/**
+ * Get database instance (throws if not initialized)
+ * @returns Database instance
+ */
+function getDb(): Db {
+  if (!db) {
+    throw new Error('Clan research service not initialized. Call initializeClanResearchService first.');
+  }
+  return db;
+}
+
+// Research node structure
+export interface ResearchNode {
+  id: string;
+  name: string;
+  description: string;
+  branch: 'INDUSTRIAL' | 'MILITARY' | 'ECONOMIC' | 'SOCIAL';
+  tier: number;
+  cost: number; // RP cost
+  requiredLevel: number; // Clan level requirement
+  prerequisites: string[]; // Research IDs that must be unlocked first
+  bonuses: {
+    type: 'harvest_speed' | 'factory_output' | 'resource_capacity' | 'attack' | 'defense' | 
+          'auction_fee_reduction' | 'bank_capacity' | 'member_slots' | 'xp_gain';
+    value: number; // Percentage or absolute value
+  }[];
+}
+
+// Research tree catalog
+const RESEARCH_TREE: ResearchNode[] = [
+  // INDUSTRIAL BRANCH
+  {
+    id: 'ind_harvest_1',
+    name: 'Advanced Harvesting',
+    description: 'Improved harvesting techniques increase resource gathering speed',
+    branch: 'INDUSTRIAL',
+    tier: 1,
+    cost: 5000,
+    requiredLevel: 5,
+    prerequisites: [],
+    bonuses: [{ type: 'harvest_speed', value: 10 }],
+  },
+  {
+    id: 'ind_factory_1',
+    name: 'Factory Automation',
+    description: 'Automated systems boost factory production efficiency',
+    branch: 'INDUSTRIAL',
+    tier: 2,
+    cost: 15000,
+    requiredLevel: 10,
+    prerequisites: ['ind_harvest_1'],
+    bonuses: [{ type: 'factory_output', value: 15 }],
+  },
+  {
+    id: 'ind_capacity_1',
+    name: 'Resource Mastery',
+    description: 'Advanced storage techniques increase resource capacity',
+    branch: 'INDUSTRIAL',
+    tier: 3,
+    cost: 40000,
+    requiredLevel: 20,
+    prerequisites: ['ind_factory_1'],
+    bonuses: [{ type: 'resource_capacity', value: 20 }],
+  },
+  {
+    id: 'ind_super_harvest',
+    name: 'Hyperharvesting',
+    description: 'Ultimate harvesting technology maximizes resource extraction',
+    branch: 'INDUSTRIAL',
+    tier: 4,
+    cost: 100000,
+    requiredLevel: 30,
+    prerequisites: ['ind_capacity_1'],
+    bonuses: [
+      { type: 'harvest_speed', value: 25 },
+      { type: 'resource_capacity', value: 30 },
+    ],
+  },
+
+  // MILITARY BRANCH
+  {
+    id: 'mil_combat_1',
+    name: 'Combat Training',
+    description: 'Basic combat drills improve attack effectiveness',
+    branch: 'MILITARY',
+    tier: 1,
+    cost: 5000,
+    requiredLevel: 5,
+    prerequisites: [],
+    bonuses: [{ type: 'attack', value: 5 }],
+  },
+  {
+    id: 'mil_tactics_1',
+    name: 'Advanced Tactics',
+    description: 'Strategic combat knowledge enhances offensive and defensive capabilities',
+    branch: 'MILITARY',
+    tier: 2,
+    cost: 15000,
+    requiredLevel: 10,
+    prerequisites: ['mil_combat_1'],
+    bonuses: [
+      { type: 'attack', value: 10 },
+      { type: 'defense', value: 5 },
+    ],
+  },
+  {
+    id: 'mil_warmachine',
+    name: 'War Machine',
+    description: 'Superior military technology dominates the battlefield',
+    branch: 'MILITARY',
+    tier: 3,
+    cost: 40000,
+    requiredLevel: 20,
+    prerequisites: ['mil_tactics_1'],
+    bonuses: [
+      { type: 'attack', value: 15 },
+      { type: 'defense', value: 10 },
+    ],
+  },
+  {
+    id: 'mil_domination',
+    name: 'Total Domination',
+    description: 'Ultimate military supremacy crushes all opposition',
+    branch: 'MILITARY',
+    tier: 4,
+    cost: 100000,
+    requiredLevel: 30,
+    prerequisites: ['mil_warmachine'],
+    bonuses: [
+      { type: 'attack', value: 25 },
+      { type: 'defense', value: 20 },
+    ],
+  },
+
+  // ECONOMIC BRANCH
+  {
+    id: 'eco_trade_1',
+    name: 'Trade Expertise',
+    description: 'Better negotiation reduces auction house fees',
+    branch: 'ECONOMIC',
+    tier: 1,
+    cost: 5000,
+    requiredLevel: 5,
+    prerequisites: [],
+    bonuses: [{ type: 'auction_fee_reduction', value: 5 }],
+  },
+  {
+    id: 'eco_banking_1',
+    name: 'Banking Systems',
+    description: 'Improved financial infrastructure expands bank capacity',
+    branch: 'ECONOMIC',
+    tier: 2,
+    cost: 15000,
+    requiredLevel: 10,
+    prerequisites: ['eco_trade_1'],
+    bonuses: [{ type: 'bank_capacity', value: 25 }],
+  },
+  {
+    id: 'eco_empire',
+    name: 'Economic Empire',
+    description: 'Vast economic power maximizes wealth generation',
+    branch: 'ECONOMIC',
+    tier: 3,
+    cost: 40000,
+    requiredLevel: 20,
+    prerequisites: ['eco_banking_1'],
+    bonuses: [
+      { type: 'bank_capacity', value: 50 },
+      { type: 'auction_fee_reduction', value: 10 },
+    ],
+  },
+  {
+    id: 'eco_monopoly',
+    name: 'Market Monopoly',
+    description: 'Complete market dominance ensures maximum profits',
+    branch: 'ECONOMIC',
+    tier: 4,
+    cost: 100000,
+    requiredLevel: 30,
+    prerequisites: ['eco_empire'],
+    bonuses: [
+      { type: 'bank_capacity', value: 100 },
+      { type: 'auction_fee_reduction', value: 20 },
+    ],
+  },
+
+  // SOCIAL BRANCH
+  {
+    id: 'soc_recruit_1',
+    name: 'Recruitment Drive',
+    description: 'Expanded recruitment efforts increase member capacity',
+    branch: 'SOCIAL',
+    tier: 1,
+    cost: 5000,
+    requiredLevel: 5,
+    prerequisites: [],
+    bonuses: [{ type: 'member_slots', value: 10 }],
+  },
+  {
+    id: 'soc_unity_1',
+    name: 'Unity Bonus',
+    description: 'Strong clan bonds accelerate member progression',
+    branch: 'SOCIAL',
+    tier: 2,
+    cost: 15000,
+    requiredLevel: 10,
+    prerequisites: ['soc_recruit_1'],
+    bonuses: [{ type: 'xp_gain', value: 5 }],
+  },
+  {
+    id: 'soc_alliance',
+    name: 'Grand Alliance',
+    description: 'Massive organization supports more members and faster growth',
+    branch: 'SOCIAL',
+    tier: 3,
+    cost: 40000,
+    requiredLevel: 20,
+    prerequisites: ['soc_unity_1'],
+    bonuses: [
+      { type: 'member_slots', value: 20 },
+      { type: 'xp_gain', value: 10 },
+    ],
+  },
+  {
+    id: 'soc_empire',
+    name: 'Empire of Unity',
+    description: 'Ultimate social cohesion creates an unstoppable force',
+    branch: 'SOCIAL',
+    tier: 4,
+    cost: 100000,
+    requiredLevel: 30,
+    prerequisites: ['soc_alliance'],
+    bonuses: [
+      { type: 'member_slots', value: 50 },
+      { type: 'xp_gain', value: 20 },
+    ],
+  },
+];
+
+/**
+ * Contribute RP to clan research pool
+ * Any clan member can contribute their personal RP to the shared pool
+ * 
+ * @param clanId - Clan ID
+ * @param playerId - Player contributing RP
+ * @param amount - RP amount to contribute
+ * @returns Updated clan research points and contribution record
+ * @throws Error if clan not found, player not in clan, or insufficient RP
+ * @example
+ * const result = await contributeRP('clan123', 'player456', 1000);
+ * // result: { success: true, newTotal: 15000, contributed: 1000 }
+ */
+export async function contributeRP(
+  clanId: string,
+  playerId: string,
+  amount: number
+): Promise<{ success: boolean; newTotal: number; contributed: number }> {
+  const database = getDb();
+
+  // Validate amount
+  if (amount <= 0) {
+    throw new Error('Contribution amount must be positive');
+  }
+
+  // Get clan
+  const clan = await database.collection('clans').findOne({ _id: new ObjectId(clanId) });
+  if (!clan) {
+    throw new Error('Clan not found');
+  }
+
+  // Verify player is in clan
+  const isMember = clan.members.some((m: any) => m.playerId === playerId);
+  if (!isMember) {
+    throw new Error('Player is not a member of this clan');
+  }
+
+  // Get player to check RP balance
+  const player = await database.collection('players').findOne({ username: playerId });
+  if (!player) {
+    throw new Error('Player not found');
+  }
+
+  if ((player.researchPoints || 0) < amount) {
+    throw new Error('Insufficient research points');
+  }
+
+  // Deduct from player
+  await database.collection('players').updateOne(
+    { username: playerId },
+    { $inc: { researchPoints: -amount } }
+  );
+
+  // Add to clan
+  await database.collection('clans').updateOne(
+    { _id: new ObjectId(clanId) },
+    { $inc: { 'research.researchPoints': amount } }
+  );
+
+  // Log activity
+  await database.collection('clan_activities').insertOne({
+    clanId,
+    type: 'RP_CONTRIBUTED',
+    playerId,
+    timestamp: new Date(),
+    metadata: {
+      amount,
+      playerName: playerId,
+    },
+  });
+
+  const updatedClan = await database.collection('clans').findOne({ _id: new ObjectId(clanId) });
+
+  return {
+    success: true,
+    newTotal: updatedClan?.research?.researchPoints || 0,
+    contributed: amount,
+  };
+}
+
+/**
+ * Unlock research node
+ * Validates prerequisites, level requirements, and RP cost
+ * 
+ * @param clanId - Clan ID
+ * @param playerId - Player initiating unlock (must be Leader/Officer)
+ * @param researchId - Research node ID to unlock
+ * @returns Unlocked research details and updated bonuses
+ * @throws Error if requirements not met or insufficient RP
+ * @example
+ * const result = await unlockResearch('clan123', 'leader456', 'ind_harvest_1');
+ * // result: { success: true, research: {...}, totalBonuses: {...} }
+ */
+export async function unlockResearch(
+  clanId: string,
+  playerId: string,
+  researchId: string
+): Promise<{
+  success: boolean;
+  research: ResearchNode;
+  totalBonuses: Record<string, number>;
+}> {
+  const database = getDb();
+
+  // Get research node
+  const researchNode = RESEARCH_TREE.find((r) => r.id === researchId);
+  if (!researchNode) {
+    throw new Error('Research node not found');
+  }
+
+  // Get clan
+  const clan = await database.collection('clans').findOne({ _id: new ObjectId(clanId) });
+  if (!clan) {
+    throw new Error('Clan not found');
+  }
+
+  // Verify player is in clan and has permissions
+  const member = clan.members.find((m: any) => m.playerId === playerId);
+  if (!member) {
+    throw new Error('Player is not a member of this clan');
+  }
+
+  // Check permissions (Leader, Co-Leader, or Officer can unlock research)
+  const allowedRoles = ['LEADER', 'CO_LEADER', 'OFFICER'];
+  if (!allowedRoles.includes(member.role)) {
+    throw new Error('Insufficient permissions to unlock research');
+  }
+
+  // Check if already unlocked
+  const unlockedResearch = clan.research?.unlockedResearch || [];
+  if (unlockedResearch.includes(researchId)) {
+    throw new Error('Research already unlocked');
+  }
+
+  // Check clan level requirement
+  if (clan.level.currentLevel < researchNode.requiredLevel) {
+    throw new Error(
+      `Clan level ${researchNode.requiredLevel} required (current: ${clan.level.currentLevel})`
+    );
+  }
+
+  // Check prerequisites
+  for (const prereqId of researchNode.prerequisites) {
+    if (!unlockedResearch.includes(prereqId)) {
+      const prereq = RESEARCH_TREE.find((r) => r.id === prereqId);
+      throw new Error(`Prerequisite not met: ${prereq?.name || prereqId}`);
+    }
+  }
+
+  // Check RP balance
+  const currentRP = clan.research?.researchPoints || 0;
+  if (currentRP < researchNode.cost) {
+    throw new Error(
+      `Insufficient research points (need ${researchNode.cost}, have ${currentRP})`
+    );
+  }
+
+  // Deduct RP and unlock research
+  await database.collection('clans').updateOne(
+    { _id: new ObjectId(clanId) },
+    {
+      $inc: { 'research.researchPoints': -researchNode.cost },
+      $push: { 'research.unlockedResearch': researchId } as any,
+    }
+  );
+
+  // Log activity
+  await database.collection('clan_activities').insertOne({
+    clanId,
+    type: 'RESEARCH_UNLOCKED',
+    playerId,
+    timestamp: new Date(),
+    metadata: {
+      researchId,
+      researchName: researchNode.name,
+      cost: researchNode.cost,
+      unlockedBy: playerId,
+    },
+  });
+
+  // Calculate new total bonuses
+  const totalBonuses = await getClanBonuses(clanId);
+
+  return {
+    success: true,
+    research: researchNode,
+    totalBonuses,
+  };
+}
+
+/**
+ * Get full research tree with locked/unlocked status
+ * Returns all research nodes categorized by branch
+ * 
+ * @param clanId - Clan ID
+ * @returns Research tree organized by branch with status
+ * @example
+ * const tree = await getResearchTree('clan123');
+ * // tree.INDUSTRIAL = [{ ...node, unlocked: true, available: false }, ...]
+ */
+export async function getResearchTree(clanId: string): Promise<{
+  INDUSTRIAL: Array<ResearchNode & { unlocked: boolean; available: boolean }>;
+  MILITARY: Array<ResearchNode & { unlocked: boolean; available: boolean }>;
+  ECONOMIC: Array<ResearchNode & { unlocked: boolean; available: boolean }>;
+  SOCIAL: Array<ResearchNode & { unlocked: boolean; available: boolean }>;
+  clanLevel: number;
+  researchPoints: number;
+}> {
+  const database = getDb();
+
+  const clan = await database.collection('clans').findOne({ _id: new ObjectId(clanId) });
+  if (!clan) {
+    throw new Error('Clan not found');
+  }
+
+  const unlockedResearch = clan.research?.unlockedResearch || [];
+  const clanLevel = clan.level.currentLevel;
+
+  // Check if research is available (prerequisites met, level requirement met, not unlocked)
+  const isAvailable = (node: ResearchNode): boolean => {
+    if (unlockedResearch.includes(node.id)) return false;
+    if (clanLevel < node.requiredLevel) return false;
+    return node.prerequisites.every((prereq) => unlockedResearch.includes(prereq));
+  };
+
+  const tree = {
+    INDUSTRIAL: RESEARCH_TREE.filter((r) => r.branch === 'INDUSTRIAL').map((r) => ({
+      ...r,
+      unlocked: unlockedResearch.includes(r.id),
+      available: isAvailable(r),
+    })),
+    MILITARY: RESEARCH_TREE.filter((r) => r.branch === 'MILITARY').map((r) => ({
+      ...r,
+      unlocked: unlockedResearch.includes(r.id),
+      available: isAvailable(r),
+    })),
+    ECONOMIC: RESEARCH_TREE.filter((r) => r.branch === 'ECONOMIC').map((r) => ({
+      ...r,
+      unlocked: unlockedResearch.includes(r.id),
+      available: isAvailable(r),
+    })),
+    SOCIAL: RESEARCH_TREE.filter((r) => r.branch === 'SOCIAL').map((r) => ({
+      ...r,
+      unlocked: unlockedResearch.includes(r.id),
+      available: isAvailable(r),
+    })),
+    clanLevel,
+    researchPoints: clan.research?.researchPoints || 0,
+  };
+
+  return tree;
+}
+
+/**
+ * Calculate total bonuses from all unlocked research
+ * Aggregates bonuses by type across all branches
+ * 
+ * @param clanId - Clan ID
+ * @returns Total bonuses by type
+ * @example
+ * const bonuses = await getClanBonuses('clan123');
+ * // bonuses: { harvest_speed: 35, attack: 20, defense: 15, ... }
+ */
+export async function getClanBonuses(clanId: string): Promise<Record<string, number>> {
+  const database = getDb();
+
+  const clan = await database.collection('clans').findOne({ _id: new ObjectId(clanId) });
+  if (!clan) {
+    throw new Error('Clan not found');
+  }
+
+  const unlockedResearch = clan.research?.unlockedResearch || [];
+  const bonuses: Record<string, number> = {};
+
+  // Aggregate bonuses from all unlocked research
+  for (const researchId of unlockedResearch) {
+    const node = RESEARCH_TREE.find((r) => r.id === researchId);
+    if (node) {
+      for (const bonus of node.bonuses) {
+        bonuses[bonus.type] = (bonuses[bonus.type] || 0) + bonus.value;
+      }
+    }
+  }
+
+  return bonuses;
+}
+
+/**
+ * Get recommended research based on clan stats
+ * Suggests next research nodes based on clan activity patterns
+ * 
+ * @param clanId - Clan ID
+ * @returns Array of recommended research with reasons
+ * @example
+ * const recs = await getRecommendedResearch('clan123');
+ * // recs: [{ research: {...}, reason: 'High combat activity', priority: 'high' }]
+ */
+export async function getRecommendedResearch(clanId: string): Promise<
+  Array<{
+    research: ResearchNode;
+    reason: string;
+    priority: 'high' | 'medium' | 'low';
+  }>
+> {
+  const database = getDb();
+
+  const clan = await database.collection('clans').findOne({ _id: new ObjectId(clanId) });
+  if (!clan) {
+    throw new Error('Clan not found');
+  }
+
+  const tree = await getResearchTree(clanId);
+  const recommendations: Array<{
+    research: ResearchNode;
+    reason: string;
+    priority: 'high' | 'medium' | 'low';
+  }> = [];
+
+  // Find available (but not unlocked) research
+  const availableResearch = [
+    ...tree.INDUSTRIAL,
+    ...tree.MILITARY,
+    ...tree.ECONOMIC,
+    ...tree.SOCIAL,
+  ].filter((r) => r.available && !r.unlocked);
+
+  // Prioritize based on clan stats
+  const stats = clan.stats || {};
+  const warsActive = stats.totalWars > 0;
+  const hasTerritory = stats.totalTerritories > 0;
+  const memberCount = clan.members.length;
+  const nearCapacity = memberCount >= clan.maxMembers * 0.8;
+
+  for (const research of availableResearch) {
+    // Military research if active in wars
+    if (research.branch === 'MILITARY' && warsActive) {
+      recommendations.push({
+        research,
+        reason: 'Recommended for active warfare',
+        priority: 'high',
+      });
+    }
+    // Economic if low on resources
+    else if (research.branch === 'ECONOMIC' && clan.research.researchPoints < 10000) {
+      recommendations.push({
+        research,
+        reason: 'Boost economic strength',
+        priority: 'medium',
+      });
+    }
+    // Social if near member capacity
+    else if (research.branch === 'SOCIAL' && nearCapacity) {
+      recommendations.push({
+        research,
+        reason: 'Expand member capacity',
+        priority: 'high',
+      });
+    }
+    // Industrial for general growth
+    else if (research.branch === 'INDUSTRIAL') {
+      recommendations.push({
+        research,
+        reason: 'Improve resource production',
+        priority: 'medium',
+      });
+    }
+  }
+
+  // Sort by priority and return top 3
+  const priorityOrder = { high: 3, medium: 2, low: 1 };
+  return recommendations
+    .sort((a, b) => priorityOrder[b.priority] - priorityOrder[a.priority])
+    .slice(0, 3);
+}
+
+/**
+ * Get research progress by branch
+ * Shows completion percentage per branch
+ * 
+ * @param clanId - Clan ID
+ * @returns Progress stats per branch
+ */
+export async function getResearchProgress(clanId: string): Promise<{
+  INDUSTRIAL: { unlocked: number; total: number; percentage: number };
+  MILITARY: { unlocked: number; total: number; percentage: number };
+  ECONOMIC: { unlocked: number; total: number; percentage: number };
+  SOCIAL: { unlocked: number; total: number; percentage: number };
+  overall: { unlocked: number; total: number; percentage: number };
+}> {
+  const tree = await getResearchTree(clanId);
+
+  const calculateBranch = (branch: any[]) => {
+    const unlocked = branch.filter((r) => r.unlocked).length;
+    const total = branch.length;
+    return {
+      unlocked,
+      total,
+      percentage: total > 0 ? Math.round((unlocked / total) * 100) : 0,
+    };
+  };
+
+  const progress = {
+    INDUSTRIAL: calculateBranch(tree.INDUSTRIAL),
+    MILITARY: calculateBranch(tree.MILITARY),
+    ECONOMIC: calculateBranch(tree.ECONOMIC),
+    SOCIAL: calculateBranch(tree.SOCIAL),
+    overall: {
+      unlocked: 0,
+      total: RESEARCH_TREE.length,
+      percentage: 0,
+    },
+  };
+
+  progress.overall.unlocked =
+    progress.INDUSTRIAL.unlocked +
+    progress.MILITARY.unlocked +
+    progress.ECONOMIC.unlocked +
+    progress.SOCIAL.unlocked;
+  progress.overall.percentage = Math.round(
+    (progress.overall.unlocked / progress.overall.total) * 100
+  );
+
+  return progress;
+}
