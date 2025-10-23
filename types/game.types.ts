@@ -23,6 +23,9 @@ import { type ObjectId } from 'mongodb';
  * - Wasteland: 8,500 tiles (38%)
  * - Bank: 4 fixed locations (Phase 3+)
  * - Shrine: 1 fixed location at (1,1) (Phase 3+)
+ * - AuctionHouse: 1 fixed location at (10,10) for trading
+ * 
+ * Note: Beer Bases are NOT terrain tiles - they are special bots with isSpecialBase flag
  */
 export enum TerrainType {
   Metal = 'Metal',
@@ -32,7 +35,8 @@ export enum TerrainType {
   Factory = 'Factory',
   Wasteland = 'Wasteland',
   Bank = 'Bank',
-  Shrine = 'Shrine'
+  Shrine = 'Shrine',
+  AuctionHouse = 'AuctionHouse'
 }
 
 /**
@@ -412,6 +416,9 @@ export interface Player {
   lastLoginDate?: Date; // Last time player logged in (for daily reward tracking)
   loginStreak?: number; // Consecutive days logged in (for streak bonuses)
   lastStreakReward?: Date; // Last time daily login reward was claimed
+  currentHP?: number; // Current HP for flag bearer defense (defaults to maxHP)
+  maxHP?: number; // Maximum HP for flag bearer defense (defaults to 1000)
+  lastFlagAttack?: Date; // Last time player attacked flag bearer (60s cooldown)
   createdAt?: Date;
 }
 

@@ -12,7 +12,7 @@ import { useRouter } from 'next/navigation';
 import { useGameContext } from '@/context/GameContext';
 import { 
   User, Trophy, BarChart3, Zap, LogOut, 
-  Settings, Clock, Users, Shield, Sparkles
+  Settings, Clock, Users, Shield, Sparkles, Flag
 } from 'lucide-react';
 
 interface TopNavBarProps {
@@ -23,6 +23,8 @@ interface TopNavBarProps {
   onAdminClick?: () => void;
   onClanClick?: () => void;
   onProfileClick?: () => void;
+  onFlagTrackerClick?: () => void;
+  flagTrackerActive?: boolean; // Visual indicator for toggle state
 }
 
 export default function TopNavBar({ 
@@ -32,7 +34,9 @@ export default function TopNavBar({
   onClansClick,
   onAdminClick,
   onClanClick,
-  onProfileClick
+  onProfileClick,
+  onFlagTrackerClick,
+  flagTrackerActive = false
 }: TopNavBarProps = {}) {
   const { player, logout } = useGameContext();
   const router = useRouter();
@@ -161,7 +165,21 @@ export default function TopNavBar({
             Tech Tree
           </button>
           
-          {/* Map Link */}
+          {/* Flag Tracker Button - LESSON #36 */}
+        {onFlagTrackerClick && (
+          <button
+            onClick={onFlagTrackerClick}
+            className={`px-3 py-1.5 text-xs rounded border transition-all flex items-center gap-1.5 ${
+              flagTrackerActive
+                ? 'bg-amber-500/30 text-white border-amber-400 shadow-lg shadow-amber-500/20'
+                : 'text-white/80 hover:text-white hover:bg-amber-500/20 border-amber-500/30'
+            }`}
+            title="Track the Flag Bearer (Hotkey: Q)"
+          >
+            <Flag className="w-3.5 h-3.5" />
+            Flag Tracker
+          </button>
+        )}          {/* Map Link */}
           <button
             onClick={() => router.push('/map')}
             className="px-3 py-1.5 text-xs text-white/80 hover:text-white hover:bg-cyan-500/20 rounded border border-cyan-500/30 transition-all flex items-center gap-1.5"

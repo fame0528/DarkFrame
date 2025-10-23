@@ -29,7 +29,7 @@ import XPProgressBar from './XPProgressBar';
 import { 
   User, MapPin, Factory, Swords, Shield as ShieldIcon, 
   Users, Trophy, LogOut, Zap, Wrench,
-  Clock, TrendingUp, Star, Sparkles, Package
+  Clock, TrendingUp, Star, Sparkles, Package, Mountain
 } from 'lucide-react';
 
 interface StatsPanelProps {
@@ -381,6 +381,145 @@ export default function StatsPanel({ onClanClick }: StatsPanelProps = {}) {
             <Users className="w-3.5 h-3.5" />
             Build Units
           </Button>
+        </div>
+      </div>
+
+      {/* Harvest Calculator - NEW */}
+      <div className="bg-gray-900/60 backdrop-blur-sm border-2 border-green-500/30 rounded-lg overflow-hidden shadow-[0_0_20px_rgba(34,197,94,0.2)]">
+        {/* Banner Title */}
+        <div className="bg-gradient-to-r from-green-500/20 to-emerald-500/20 border-b border-green-500/30 px-3 py-2">
+          <h3 className="text-sm font-bold text-white font-display flex items-center gap-2">
+            <TrendingUp className="w-4 h-4" />
+            HARVEST CALCULATOR
+          </h3>
+        </div>
+        {/* Content */}
+        <div className="p-3 space-y-3 text-xs">
+          {/* Metal Breakdown */}
+          <div>
+            <div className="flex items-center gap-1.5 mb-2">
+              <Wrench className="w-3.5 h-3.5 text-gray-400" />
+              <span className="text-white/70 font-semibold text-[11px]">METAL NODE</span>
+            </div>
+            <div className="space-y-1.5 ml-5">
+              <div className="flex items-center justify-between">
+                <span className="text-white/60">Base Amount</span>
+                <span className="text-white font-mono">1,000</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-white/60">Gathering Bonus</span>
+                <span className="text-green-400 font-mono">
+                  +{(player.gatheringBonus?.metalBonus || 0)}%
+                </span>
+              </div>
+              {activeBoosts.length > 0 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-white/60 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-cyan-400" />
+                    Shrine Buffs
+                  </span>
+                  <span className="text-cyan-400 font-mono">
+                    +{(totalShrineBonus * 100).toFixed(0)}%
+                  </span>
+                </div>
+              )}
+              <div className="h-px bg-gradient-to-r from-transparent via-green-500/30 to-transparent my-1" />
+              <div className="flex items-center justify-between">
+                <span className="text-white font-semibold">Expected Amount</span>
+                <span className="text-green-400 font-bold font-mono">
+                  {Math.round(1000 * (1 + ((player.gatheringBonus?.metalBonus || 0) / 100)) * (1 + totalShrineBonus)).toLocaleString()}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="h-px bg-gradient-to-r from-transparent via-green-500/20 to-transparent" />
+
+          {/* Energy Breakdown */}
+          <div>
+            <div className="flex items-center gap-1.5 mb-2">
+              <Zap className="w-3.5 h-3.5 text-yellow-400" />
+              <span className="text-white/70 font-semibold text-[11px]">ENERGY NODE</span>
+            </div>
+            <div className="space-y-1.5 ml-5">
+              <div className="flex items-center justify-between">
+                <span className="text-white/60">Base Amount</span>
+                <span className="text-white font-mono">1,000</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-white/60">Gathering Bonus</span>
+                <span className="text-green-400 font-mono">
+                  +{(player.gatheringBonus?.energyBonus || 0)}%
+                </span>
+              </div>
+              {activeBoosts.length > 0 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-white/60 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-cyan-400" />
+                    Shrine Buffs
+                  </span>
+                  <span className="text-cyan-400 font-mono">
+                    +{(totalShrineBonus * 100).toFixed(0)}%
+                  </span>
+                </div>
+              )}
+              <div className="h-px bg-gradient-to-r from-transparent via-green-500/30 to-transparent my-1" />
+              <div className="flex items-center justify-between">
+                <span className="text-white font-semibold">Expected Amount</span>
+                <span className="text-green-400 font-bold font-mono">
+                  {Math.round(1000 * (1 + ((player.gatheringBonus?.energyBonus || 0) / 100)) * (1 + totalShrineBonus)).toLocaleString()}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="h-px bg-gradient-to-r from-transparent via-green-500/20 to-transparent" />
+
+          {/* Cave/Forest Breakdown */}
+          <div>
+            <div className="flex items-center gap-1.5 mb-2">
+              <Mountain className="w-3.5 h-3.5 text-amber-600" />
+              <span className="text-white/70 font-semibold text-[11px]">CAVE/FOREST</span>
+            </div>
+            <div className="space-y-1.5 ml-5">
+              <div className="flex items-center justify-between">
+                <span className="text-white/60">Base Amount</span>
+                <span className="text-white font-mono">500-1,500</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-white/60">Gathering Bonus</span>
+                <span className="text-green-400 font-mono">
+                  +{(player.gatheringBonus?.metalBonus || 0)}% / +{(player.gatheringBonus?.energyBonus || 0)}%
+                </span>
+              </div>
+              {activeBoosts.length > 0 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-white/60 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-cyan-400" />
+                    Shrine Buffs
+                  </span>
+                  <span className="text-cyan-400 font-mono">
+                    +{(totalShrineBonus * 100).toFixed(0)}%
+                  </span>
+                </div>
+              )}
+              <div className="h-px bg-gradient-to-r from-transparent via-green-500/30 to-transparent my-1" />
+              <div className="flex items-center justify-between">
+                <span className="text-white font-semibold">Expected Range</span>
+                <span className="text-green-400 font-bold font-mono text-[10px]">
+                  {Math.round(500 * (1 + ((player.gatheringBonus?.metalBonus || 0) / 100)) * (1 + totalShrineBonus)).toLocaleString()}-{Math.round(1500 * (1 + ((player.gatheringBonus?.metalBonus || 0) / 100)) * (1 + totalShrineBonus)).toLocaleString()}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Harvest Cooldown Info */}
+          <div className="mt-3 p-2 bg-amber-500/10 border border-amber-500/30 rounded">
+            <div className="flex items-center gap-2 text-[10px] text-amber-300">
+              <Clock className="w-3 h-3" />
+              <span>5-minute cooldown per tile after harvesting</span>
+            </div>
+          </div>
         </div>
       </div>
 

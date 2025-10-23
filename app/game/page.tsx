@@ -12,9 +12,10 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useGameContext } from '@/context/GameContext';
-import { GameLayout, StatsPanel, TileRenderer, ControlsPanel, BankPanel, ShrinePanel, UnitBuildPanelEnhanced, FactoryManagementPanel, TierUnlockPanel, BattleLogLinks, SpecializationPanel, DiscoveryNotification, DiscoveryLogPanel, AchievementNotification, AchievementPanel, AuctionHousePanel, InventoryPanel, BotScannerPanel, AutoFarmPanel, AutoFarmStatsDisplay } from '@/components';
+import { GameLayout, StatsPanel, TileRenderer, ControlsPanel, BankPanel, ShrinePanel, UnitBuildPanelEnhanced, FactoryManagementPanel, TierUnlockPanel, BattleLogLinks, SpecializationPanel, DiscoveryNotification, DiscoveryLogPanel, AchievementNotification, AchievementPanel, AuctionHousePanel, InventoryPanel, BotScannerPanel, BeerBasePanel, AutoFarmPanel, AutoFarmStatsDisplay, BotMagnetPanel, BotSummoningPanel, BountyBoardPanel } from '@/components';
 import TopNavBar from '@/components/TopNavBar';
 import FlagTrackerPanel from '@/components/FlagTrackerPanel';
+import TileHarvestStatus from '@/components/TileHarvestStatus';
 import CaveItemNotification from '@/components/CaveItemNotification';
 import ClanManagementView from '@/components/clan/ClanManagementView';
 import LeaderboardView from '@/components/LeaderboardView';
@@ -91,6 +92,9 @@ export default function GamePage() {
   const [showAchievementPanel, setShowAchievementPanel] = useState(false);
   const [showAuctionHouse, setShowAuctionHouse] = useState(false);
   const [showDiscoveryLog, setShowDiscoveryLog] = useState(false);
+  const [showBotMagnet, setShowBotMagnet] = useState(false);
+  const [showBotSummoning, setShowBotSummoning] = useState(false);
+  const [showBountyBoard, setShowBountyBoard] = useState(false);
   
   // ============================================
   // CENTER VIEW STATE (Embedded Page Navigation)
@@ -113,13 +117,11 @@ export default function GamePage() {
   const [autoFarmLastAction, setAutoFarmLastAction] = useState<string>('Ready');
   const [autoFarmSessionStats, setAutoFarmSessionStats] = useState<AutoFarmSessionStats>(DEFAULT_SESSION_STATS);
   const [autoFarmAllTimeStats, setAutoFarmAllTimeStats] = useState<AutoFarmAllTimeStats>(DEFAULT_ALL_TIME_STATS);
-  const [showAutoFarmStats, setShowAutoFarmStats] = useState<boolean>(false);
 
   // ============================================
   // FLAG TRACKER STATE
   // ============================================
   const [flagBearer, setFlagBearer] = useState<FlagBearer | null>(null);
-  const [showFlagTracker, setShowFlagTracker] = useState<boolean>(true);
   const [attackCooldown, setAttackCooldown] = useState<boolean>(false);
   const [cooldownRemaining, setCooldownRemaining] = useState<number>(0);
 
@@ -240,6 +242,15 @@ export default function GamePage() {
   // FLAG TRACKER DATA FETCHING
   // ============================================
   useEffect(() => {
+    // Initialize flag system first (ensures there's always a flag bearer)
+    const initializeFlag = async () => {
+      try {
+        await fetch('/api/flag/init', { method: 'POST' });
+      } catch (error) {
+        console.error('[Flag Tracker] Error initializing flag system:', error);
+      }
+    };
+
     // Fetch initial flag data
     const fetchFlagData = async () => {
       try {
@@ -257,7 +268,8 @@ export default function GamePage() {
       }
     };
 
-    fetchFlagData();
+    // Initialize then fetch
+    initializeFlag().then(() => fetchFlagData());
 
     // Poll for updates every 30 seconds (until WebSocket is implemented)
     const pollInterval = setInterval(fetchFlagData, 30000);
@@ -271,12 +283,23 @@ export default function GamePage() {
     
     const tileKey = `${currentTile.x},${currentTile.y}`;
     if (lastTileKey && lastTileKey !== tileKey) {
-      setHarvestResult(null);
+      // DO NOT clear harvestResult here - let it persist so player can see results while moving
+      // Only clear attack/factory results which are position-specific
       setAttackResult(null);
       setFactoryData(null);
       
       // Close any embedded view when player moves
       setCurrentView('TILE');
+      
+      // Refresh flag bearer data after movement
+      fetch('/api/flag')
+        .then(res => res.json())
+        .then(data => {
+          if (data.success && data.data) {
+            setFlagBearer(data.data);
+          }
+        })
+        .catch(err => console.error('[Flag Tracker] Error refreshing flag data after move:', err));
     }
     setLastTileKey(tileKey);
 
@@ -365,6 +388,21 @@ export default function GamePage() {
       setShowAuctionHouse(prev => !prev);
     }
 
+    // 'J' key - Toggle Bot Magnet Panel
+    if (key === 'j') {
+      setShowBotMagnet(prev => !prev);
+    }
+
+    // 'Y' key - Toggle Bot Summoning Panel
+    if (key === 'y') {
+      setShowBotSummoning(prev => !prev);
+    }
+
+    // 'O' key - Toggle Bounty Board Panel
+    if (key === 'o') {
+      setShowBountyBoard(prev => !prev);
+    }
+
     // 'R' key - Toggle Auto-Farm (R for Robot/automate)
     if (key === 'r') {
       if (!autoFarmEngineRef.current) return;
@@ -385,11 +423,6 @@ export default function GamePage() {
       }
     }
 
-    // 'Shift+S' key - Toggle Auto-Farm Stats Display
-    if (key === 's' && event.shiftKey) {
-      setShowAutoFarmStats(prev => !prev);
-    }
-
     // 'C' key - Toggle Clan Panel
     if (key === 'c') {
       setCurrentView(prev => prev === 'CLAN' ? 'TILE' : 'CLAN');
@@ -404,6 +437,9 @@ export default function GamePage() {
     if (key === 'p') {
       setCurrentView(prev => prev === 'LEADERBOARD' ? 'TILE' : 'LEADERBOARD');
     }
+
+    // 'Q' key - Flag Tracker is always visible (removed toggle)
+    // Q hotkey removed - flag tracker now permanently in sidebar
 
     // 'G' key - Harvest for Metal/Energy
     if (key === 'g') {
@@ -579,12 +615,15 @@ export default function GamePage() {
   const handleFlagAttack = async (bearer: FlagBearer) => {
     if (!player || attackCooldown) return;
 
+    // Get the bearer ID (player or bot)
+    const targetId = bearer.playerId || 'BOT'; // Use 'BOT' placeholder if bot holds flag
+
     try {
       const response = await fetch('/api/flag/attack', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          targetPlayerId: bearer.playerId,
+          targetPlayerId: targetId,
           attackerPosition: player.currentPosition
         })
       });
@@ -653,6 +692,7 @@ export default function GamePage() {
         onProfileClick={() => setCurrentView('PROFILE')}
         onAdminClick={() => setCurrentView('ADMIN')}
       />
+      
       <InventoryPanel />
       <CaveItemNotification />
       <DiscoveryNotification 
@@ -684,8 +724,26 @@ export default function GamePage() {
         <AuctionHousePanel onClose={() => setShowAuctionHouse(false)} />
       )}
 
-      {/* Bot Scanner Panel - Always rendered, self-manages "B" key activation */}
+      {/* Bot Magnet Panel (Hotkey: J) */}
+      {showBotMagnet && (
+        <BotMagnetPanel />
+      )}
+
+      {/* Bot Summoning Panel (Hotkey: Y) */}
+      {showBotSummoning && (
+        <BotSummoningPanel />
+      )}
+
+      {/* Bounty Board Panel (Hotkey: O) */}
+      {showBountyBoard && (
+        <BountyBoardPanel />
+      )}
+
+      {/* Bot Scanner Panel - Always rendered, self-manages "Shift+B" key activation */}
       <BotScannerPanel />
+
+      {/* Beer Base Panel - Always rendered, self-manages hotkey activation */}
+      <BeerBasePanel />
       
       {/* Bank Panel */}
       {currentTile && currentTile.terrain === TerrainType.Bank && player && (
@@ -797,6 +855,7 @@ export default function GamePage() {
                 harvestResult={harvestResult}
                 factoryData={factoryData}
                 attackResult={attackResult}
+                flagBearer={flagBearer}
                 onDiscovery={(discovery, total) => {
                   setDiscoveryNotification(discovery);
                   setTotalDiscoveries(total);
@@ -805,6 +864,7 @@ export default function GamePage() {
                 isHarvesting={isHarvesting}
                 onAttackClick={handleAttack}
                 isAttacking={isAttacking}
+                onFlagAttack={handleFlagAttack}
               />
             </div>
           ) : currentView === 'TILE' ? (
@@ -866,7 +926,10 @@ export default function GamePage() {
                 </button>
               </div>
               <div className="flex-1 overflow-auto">
-                <StatsViewWrapper />
+                <StatsViewWrapper 
+                  currentTile={currentTile}
+                  playerUsername={player?.username || ''}
+                />
               </div>
             </div>
           ) : currentView === 'TECH_TREE' ? (
@@ -881,7 +944,7 @@ export default function GamePage() {
                 </button>
               </div>
               <div className="flex-1 overflow-auto">
-                <TechTreePage />
+                <TechTreePage embedded={true} />
               </div>
             </div>
           ) : currentView === 'BATTLE_LOG' ? (
@@ -926,7 +989,7 @@ export default function GamePage() {
                 </button>
               </div>
               <div className="flex-1 overflow-auto">
-                <ProfilePage />
+                <ProfilePage embedded={true} />
               </div>
             </div>
           ) : currentView === 'ADMIN' ? (
@@ -965,34 +1028,13 @@ export default function GamePage() {
               />
             </div>
 
-            {/* Auto-Farm Stats Display - Collapsible */}
-            {showAutoFarmStats && (
-              <div className="p-3">
-                <AutoFarmStatsDisplay
-                  sessionStats={autoFarmSessionStats}
-                  allTimeStats={autoFarmAllTimeStats}
-                  isActive={autoFarmStatus === AutoFarmStatus.ACTIVE}
-                />
-              </div>
-            )}
-
-            {/* Toggle Stats Button */}
-            <div className="p-3">
-              <button
-                onClick={() => setShowAutoFarmStats(!showAutoFarmStats)}
-                className="w-full px-4 py-2 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 rounded-lg transition-colors text-white text-sm"
-              >
-                {showAutoFarmStats ? '📊 Hide Auto-Farm Stats' : '📊 Show Auto-Farm Stats'}
-              </button>
-            </div>
-
             {/* WMD Mini Status Widget */}
             <div className="p-3">
               <WMDMiniStatus />
             </div>
 
-            {/* Flag Tracker Panel - Collapsible */}
-            {showFlagTracker && flagBearer && (
+            {/* Flag Tracker Panel - Always Visible */}
+            {flagBearer && (
               <div className="p-3">
                 <FlagTrackerPanel
                   playerPosition={player?.currentPosition || { x: 75, y: 75 }}
@@ -1003,18 +1045,6 @@ export default function GamePage() {
                   cooldownRemaining={cooldownRemaining}
                   compact={false}
                 />
-              </div>
-            )}
-
-            {/* Toggle Flag Tracker Button */}
-            {flagBearer && (
-              <div className="p-3">
-                <button
-                  onClick={() => setShowFlagTracker(!showFlagTracker)}
-                  className="w-full px-4 py-2 bg-orange-600/20 hover:bg-orange-600/30 border border-orange-500/30 rounded-lg transition-colors text-white text-sm"
-                >
-                  {showFlagTracker ? '🏴 Hide Flag Tracker' : '🏴 Show Flag Tracker'}
-                </button>
               </div>
             )}
           </>

@@ -24,6 +24,8 @@ import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
+import { useWebSocketContext } from '@/context/WebSocketContext';
+import { showSuccess, showError, showInfo } from '@/lib/toastService';
 
 interface Tech {
   id: string;
@@ -58,12 +60,32 @@ export default function WMDResearchPanel() {
   const [techs, setTechs] = useState<Tech[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTrack, setSelectedTrack] = useState<'MISSILE' | 'DEFENSE' | 'INTELLIGENCE' | 'ALL'>('ALL');
+  const { socket, isConnected } = useWebSocketContext();
 
   useEffect(() => {
     fetchResearchData();
+    fetchTechTree();
     const interval = setInterval(fetchResearchData, 10000); // Update every 10s
     return () => clearInterval(interval);
   }, []);
+
+  // WebSocket event subscriptions
+  useEffect(() => {
+    if (!socket || !isConnected) return;
+
+    // Listen for research completion
+    const handleResearchComplete = (payload: any) => {
+      showSuccess(`Research complete: ${payload.techName}!`);
+      fetchResearchData();
+      fetchTechTree(); // Refresh for new unlocks
+    };
+
+    socket.on('wmd:research_complete', handleResearchComplete);
+
+    return () => {
+      socket.off('wmd:research_complete', handleResearchComplete);
+    };
+  }, [socket, isConnected]);
 
   const fetchResearchData = async () => {
     try {
@@ -79,31 +101,79 @@ export default function WMDResearchPanel() {
     }
   };
 
+  const fetchTechTree = async () => {
+    try {
+      const res = await fetch('/api/wmd/research?view=tree');
+      const data = await res.json();
+      if (data.success) {
+        // Flatten tech tree into array
+        const allTechs: Tech[] = [];
+        Object.values(data.tree).forEach((categoryTechs: any) => {
+          categoryTechs.forEach((tech: any) => {
+            allTechs.push({
+              id: tech.techId,
+              name: tech.name,
+              description: tech.description,
+              track: tech.category,
+              tier: 1, // Calculate from prerequisites
+              rpCost: tech.rpCost,
+              researchTime: tech.researchTime || 0,
+              prerequisites: tech.prerequisites || [],
+              unlocks: tech.unlocks || [],
+            });
+          });
+        });
+        setTechs(allTechs);
+      }
+    } catch (error) {
+      console.error('Failed to fetch tech tree:', error);
+    }
+  };
+
   const startResearch = async (techId: string) => {
-    const res = await fetch('/api/wmd/research', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'start', techId }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      await fetchResearchData();
-    } else {
-      alert(data.error || 'Failed to start research');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/wmd/research', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'start', techId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showSuccess('Research started successfully!');
+        await fetchResearchData();
+      } else {
+        showError(data.error || 'Failed to start research');
+      }
+    } catch (error) {
+      showError('Error starting research');
+      console.error('Error starting research:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
   const spendRP = async (techId: string) => {
-    const res = await fetch('/api/wmd/research', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'spendRP', techId }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      await fetchResearchData();
-    } else {
-      alert(data.error || 'Failed to spend RP');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/wmd/research', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'spendRP', techId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showSuccess('Research unlocked instantly!');
+        await fetchResearchData();
+        await fetchTechTree();
+      } else {
+        showError(data.error || 'Failed to spend RP');
+      }
+    } catch (error) {
+      showError('Error spending RP');
+      console.error('Error spending RP:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -139,7 +209,7 @@ export default function WMDResearchPanel() {
         </div>
         <div className="text-right">
           <div className="text-3xl font-bold text-green-400">
-            {research?.researchPoints.toLocaleString() || 0} RP
+            {research?.researchPoints?.toLocaleString() || 0} RP
           </div>
           {research && research.clanResearchBonus > 0 && (
             <Badge className="bg-blue-600 mt-1">
@@ -202,7 +272,7 @@ export default function WMDResearchPanel() {
 
       {/* Tech Tree Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {research?.availableTechs.slice(0, 9).map((techId) => {
+        {research?.availableTechs?.slice(0, 9).map((techId) => {
           const isCompleted = research.completedTechs.includes(techId);
           const isAvailable = research.availableTechs.includes(techId);
           const isResearching = research.currentResearch?.techId === techId;
@@ -253,7 +323,7 @@ export default function WMDResearchPanel() {
       </div>
 
       {/* Empty State */}
-      {research && research.availableTechs.length === 0 && (
+      {research && research.availableTechs?.length === 0 && (
         <div className="text-center py-12">
           <p className="text-gray-400 text-lg">All research complete!</p>
           <p className="text-gray-500 text-sm">You've unlocked all WMD technologies</p>

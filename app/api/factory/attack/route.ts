@@ -19,10 +19,14 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    console.log(`⚔️  ${username} attacking factory at (${x}, ${y})`);
+    // Convert coordinates to numbers to ensure database consistency
+    const xNum = typeof x === 'number' ? x : parseInt(x, 10);
+    const yNum = typeof y === 'number' ? y : parseInt(y, 10);
+    
+    console.log(`⚔️  ${username} attacking factory at (${xNum}, ${yNum})`);
     
     // Attempt attack
-    const result = await attackFactory(username, x, y);
+    const result = await attackFactory(username, xNum, yNum);
     
     return NextResponse.json(result);
   } catch (error) {

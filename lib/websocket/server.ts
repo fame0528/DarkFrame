@@ -68,21 +68,36 @@ export function getSocketIOServer(
   });
 
   // ============================================================================
-  // AUTHENTICATION MIDDLEWARE
+  // AUTHENTICATION MIDDLEWARE WITH RETRY LOGIC
   // ============================================================================
 
   io.use(async (socket, next) => {
-    const result = await authenticateSocket(socket);
+    const maxRetries = 3;
+    const retryDelays = [100, 300, 500]; // Exponential backoff in ms
+    
+    let lastError = 'Authentication failed';
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const result = await authenticateSocket(socket);
 
-    if (result.success && result.user) {
-      // Attach user data to socket
-      socket.data.user = result.user;
-      console.log(`[Socket.io] User authenticated: ${result.user.username} (${socket.id})`);
-      next();
-    } else {
-      console.error(`[Socket.io] Authentication failed: ${result.error}`);
-      next(new Error(result.error || 'Authentication failed'));
+      if (result.success && result.user) {
+        // Attach user data to socket
+        socket.data.user = result.user;
+        console.log(`[Socket.io] User authenticated: ${result.user.username} (${socket.id})${attempt > 0 ? ` (retry ${attempt})` : ''}`);
+        return next();
+      }
+      
+      lastError = result.error || 'Authentication failed';
+      
+      // If this isn't the last attempt, wait before retrying
+      if (attempt < maxRetries - 1) {
+        await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
+      }
     }
+    
+    // All retries failed
+    console.error(`[Socket.io] Authentication failed after ${maxRetries} attempts: ${lastError}`);
+    next(new Error(lastError));
   });
 
   // ============================================================================

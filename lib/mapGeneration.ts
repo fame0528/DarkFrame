@@ -76,13 +76,17 @@ const FIXED_LOCATIONS = {
     { x: 75, y: 75, type: 'energy' as const },
     { x: 50, y: 50, type: 'exchange' as const },
     { x: 100, y: 100, type: 'exchange' as const }
-  ]
+  ],
+  AUCTION_HOUSE: { x: 10, y: 10 }
 };
 
 /**
  * Check if coordinate is a fixed special location
  */
-function isFixedLocation(x: number, y: number): { type: 'shrine' | 'bank' | null; bankType?: 'metal' | 'energy' | 'exchange' } {
+function isFixedLocation(x: number, y: number): { 
+  type: 'shrine' | 'bank' | 'auction' | null; 
+  bankType?: 'metal' | 'energy' | 'exchange' 
+} {
   // Check shrine
   if (x === FIXED_LOCATIONS.SHRINE.x && y === FIXED_LOCATIONS.SHRINE.y) {
     return { type: 'shrine' };
@@ -92,6 +96,11 @@ function isFixedLocation(x: number, y: number): { type: 'shrine' | 'bank' | null
   const bank = FIXED_LOCATIONS.BANKS.find(b => b.x === x && b.y === y);
   if (bank) {
     return { type: 'bank', bankType: bank.type };
+  }
+  
+  // Check auction house
+  if (x === FIXED_LOCATIONS.AUCTION_HOUSE.x && y === FIXED_LOCATIONS.AUCTION_HOUSE.y) {
+    return { type: 'auction' };
   }
   
   return { type: null };
@@ -106,6 +115,9 @@ function isFixedLocation(x: number, y: number): { type: 'shrine' | 'bank' | null
  * - Metal Bank at (25,25)
  * - Energy Bank at (75,75)
  * - Exchange Banks at (50,50) and (100,100)
+ * - Auction House at (10,10)
+ * 
+ * Note: Beer Bases spawn dynamically at random bot locations (not fixed map tiles)
  * 
  * @returns Array of 22,500 tile objects
  */
@@ -136,6 +148,15 @@ function generateTiles(): Tile[] {
           y,
           terrain: TerrainType.Bank,
           bankType: fixedLoc.bankType,
+          occupiedByBase: false
+        });
+        terrainIndex++; // Skip one terrain in the random array
+      } else if (fixedLoc.type === 'auction') {
+        // Auction House at (10,10)
+        tiles.push({
+          x,
+          y,
+          terrain: TerrainType.AuctionHouse,
           occupiedByBase: false
         });
         terrainIndex++; // Skip one terrain in the random array

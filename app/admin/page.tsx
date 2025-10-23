@@ -26,6 +26,7 @@ import BattleLogsModal from '@/components/admin/BattleLogsModal';
 import AchievementStatsModal from '@/components/admin/AchievementStatsModal';
 import SystemResetModal from '@/components/admin/SystemResetModal';
 import WebSocketConsoleModal from '@/components/admin/WebSocketConsoleModal';
+import HotkeyManagerPanel from '@/components/HotkeyManagerPanel';
 
 interface AdminStats {
   totalPlayers: number;
@@ -74,6 +75,7 @@ export default function AdminPage({ embedded = false }: AdminPageProps = {}) {
   const [showAchievementStats, setShowAchievementStats] = useState(false);
   const [showSystemReset, setShowSystemReset] = useState(false);
   const [showWebSocketConsole, setShowWebSocketConsole] = useState(false);
+  const [showHotkeyManager, setShowHotkeyManager] = useState(false);
   
   // WMD system state
   const [wmdStatus, setWmdStatus] = useState<any>(null);
@@ -1171,6 +1173,12 @@ Regen Cycle: ${botStats.lastRegenCycle || 'Never'}
                       🏭 Factory Inspector
                     </button>
                     <button 
+                      onClick={() => setShowHotkeyManager(true)}
+                      className="bg-cyan-700 hover:bg-cyan-600 text-white px-4 py-3 rounded-lg font-semibold transition-colors text-sm"
+                    >
+                      ⌨️ Hotkey Manager
+                    </button>
+                    <button 
                       onClick={() => setShowSystemReset(true)}
                       className="bg-red-700 hover:bg-red-600 text-white px-4 py-3 rounded-lg font-semibold transition-colors text-sm"
                     >
@@ -2166,6 +2174,14 @@ Regen Cycle: ${botStats.lastRegenCycle || 'Never'}
           {showWebSocketConsole && (
             <WebSocketConsoleModal
               onClose={() => setShowWebSocketConsole(false)}
+            />
+          )}
+
+          {/* Hotkey Manager Modal */}
+          {showHotkeyManager && (
+            <HotkeyManagerPanel
+              isOpen={showHotkeyManager}
+              onClose={() => setShowHotkeyManager(false)}
             />
           )}
         </div>

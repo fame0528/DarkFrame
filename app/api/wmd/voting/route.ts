@@ -1,6 +1,7 @@
 /**
  * @file app/api/wmd/voting/route.ts
  * @created 2025-10-22
+ * @updated 2025-10-23 - Added veto action for clan leaders
  * @overview WMD Clan Voting API Endpoints
  * 
  * OVERVIEW:
@@ -9,7 +10,7 @@
  * 
  * Features:
  * - GET: Fetch clan votes and authorization status
- * - POST: Create votes and cast ballots
+ * - POST: Create votes, cast ballots, and veto (leader only)
  * 
  * Authentication: JWT tokens via HttpOnly cookies
  * Dependencies: clanVotingService.ts, apiHelpers.ts
@@ -22,6 +23,7 @@ import {
   castVote,
   getClanVotes,
   hasLaunchAuthorization,
+  vetoClanVote,
 } from '@/lib/wmd/clanVotingService';
 import { getIO } from '@/lib/websocket/server';
 import { wmdHandlers } from '@/lib/websocket/handlers';
@@ -217,8 +219,55 @@ export async function POST(req: NextRequest) {
       });
     }
     
+    // Veto vote (leader only)
+    if (action === 'veto') {
+      const { voteId, reason } = body;
+      
+      if (!voteId) {
+        return NextResponse.json(
+          { error: 'Missing required field: voteId' },
+          { status: 400 }
+        );
+      }
+      
+      const result = await vetoClanVote(db, voteId, auth.playerId, auth.username, reason);
+      
+      if (!result.success) {
+        return NextResponse.json(
+          { error: result.message },
+          { status: 400 }
+        );
+      }
+      
+      // Broadcast veto to clan
+      try {
+        const voteData = await db.collection('wmd_clan_votes').findOne({ voteId });
+        const io = getIO();
+        if (voteData && io) {
+          await wmdHandlers.broadcastClanVoteUpdate(io, {
+            clanId: auth.player.clanId,
+            voteId,
+            voteType: voteData.voteType,
+            proposer: voteData.proposer,
+            targetName: voteData.targetUsername,
+            status: 'VETOED',
+            votesFor: voteData.votesFor.length,
+            votesAgainst: voteData.votesAgainst.length,
+            requiredVotes: voteData.requiredVotes,
+          });
+        }
+      } catch (broadcastError) {
+        console.error('Failed to broadcast veto:', broadcastError);
+      }
+      
+      return NextResponse.json({
+        success: true,
+        message: result.message,
+      });
+    }
+    
     return NextResponse.json(
-      { error: 'Invalid action. Use "create" or "cast"' },
+      { error: 'Invalid action. Use "create", "cast", or "veto"' },
       { status: 400 }
     );
   } catch (error) {

@@ -35,3 +35,18 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# logs (Winston will create these)
+/logs
+*.log
+
+# database backups
+/backups
+*.zip
+
+# temporary files
+.DS_Store
+*.pem
+*.swp
+*.swo
+*~

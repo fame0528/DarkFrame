@@ -22,7 +22,6 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { useWMDNotifications } from '@/hooks';
-import BackButton from '@/components/BackButton';
 import WMDResearchPanel from './WMDResearchPanel';
 import WMDMissilePanel from './WMDMissilePanel';
 import WMDDefensePanel from './WMDDefensePanel';
@@ -58,22 +57,19 @@ export default function WMDHub() {
   ];
 
   return (
-    <div className="h-full w-full overflow-auto bg-gradient-to-b from-gray-900 to-black p-4 md:p-6">
+    <div className="bg-gray-800 rounded-lg shadow-2xl h-full overflow-hidden flex flex-col">
       {/* Header */}
-      <div className="mb-6">
-        <div className="flex items-center gap-4 mb-2">
-          <BackButton />
-          <h1 className="text-3xl md:text-4xl font-bold text-white">
-            ⚔️ Weapons of Mass Destruction
-          </h1>
-        </div>
+      <div className="bg-gray-900 border-b border-gray-700 p-6 flex-shrink-0">
+        <h1 className="text-3xl font-bold text-white mb-2">
+          ⚔️ Weapons of Mass Destruction
+        </h1>
         <p className="text-gray-400">
           Research, build, and deploy advanced warfare systems
         </p>
       </div>
 
       {/* Tab Navigation */}
-      <div className="flex flex-wrap gap-2 mb-6 bg-gray-800 p-3 rounded-lg">
+      <div className="flex flex-wrap gap-2 p-4 bg-gray-800/50 border-b border-gray-700 flex-shrink-0">
         {tabs.map((tab) => (
           <Button
             key={tab.id}
@@ -88,13 +84,15 @@ export default function WMDHub() {
       </div>
 
       {/* Active Panel */}
-      <div className="max-w-7xl mx-auto">
-        {activeTab === 'research' && <WMDResearchPanel />}
-        {activeTab === 'missiles' && <WMDMissilePanel />}
-        {activeTab === 'defense' && <WMDDefensePanel />}
-        {activeTab === 'intelligence' && <WMDIntelligencePanel />}
-        {activeTab === 'voting' && <WMDVotingPanel />}
-        {activeTab === 'notifications' && <WMDNotificationsPanel />}
+      <div className="flex-1 overflow-auto p-6">
+        <div className="max-w-7xl mx-auto">
+          {activeTab === 'research' && <WMDResearchPanel />}
+          {activeTab === 'missiles' && <WMDMissilePanel />}
+          {activeTab === 'defense' && <WMDDefensePanel />}
+          {activeTab === 'intelligence' && <WMDIntelligencePanel />}
+          {activeTab === 'voting' && <WMDVotingPanel />}
+          {activeTab === 'notifications' && <WMDNotificationsPanel />}
+        </div>
       </div>
     </div>
   );

@@ -165,6 +165,22 @@ const SHRINE_MESSAGES = [
 ];
 
 /**
+ * Auction House tile messages - Trading hub
+ */
+const AUCTION_HOUSE_MESSAGES = [
+  "🏛️ Auction House - Buy and sell items with other players",
+  "🏛️ The marketplace buzzes with commerce and opportunity",
+  "🏛️ Fortunes change hands beneath these ancient arches",
+  "🏛️ Smart traders know the Auction House is where wealth begins",
+  "🏛️ List your surplus, bid on treasures, dominate the economy",
+  "🏛️ The wasteland's premier trading destination",
+  "🏛️ Every transaction here reshapes the balance of power",
+  "🏛️ Legendary items appear on these auction blocks",
+  "🏛️ Economic warfare is waged in these hallowed halls",
+  "🏛️ What you can't find, you can buy - what you can't use, you can sell"
+];
+
+/**
  * Get random tile message for given terrain type
  * 
  * @param terrain - Type of terrain
@@ -205,6 +221,9 @@ export function getRandomTileMessage(
       break;
     case TerrainType.Shrine:
       messages = SHRINE_MESSAGES;
+      break;
+    case TerrainType.AuctionHouse:
+      messages = AUCTION_HOUSE_MESSAGES;
       break;
     default:
       return 'Unknown terrain';
@@ -261,6 +280,9 @@ export function getConsistentTileMessage(
       break;
     case TerrainType.Shrine:
       messages = SHRINE_MESSAGES;
+      break;
+    case TerrainType.AuctionHouse:
+      messages = AUCTION_HOUSE_MESSAGES;
       break;
     default:
       return 'Unknown terrain';

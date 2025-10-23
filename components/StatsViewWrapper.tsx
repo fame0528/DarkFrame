@@ -14,11 +14,17 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import BackButton from './BackButton';
+import TileHarvestStatus from './TileHarvestStatus';
+import type { Tile } from '@/types/game.types';
 
 // ============================================================
 // TYPE DEFINITIONS
 // ============================================================
+
+interface StatsViewWrapperProps {
+  currentTile: Tile | null;
+  playerUsername: string;
+}
 
 interface PlayerStats {
   battlesWon: number;
@@ -76,7 +82,7 @@ type TabType = 'personal' | 'game' | 'economy';
 // MAIN COMPONENT
 // ============================================================
 
-export default function StatsViewWrapper() {
+export default function StatsViewWrapper({ currentTile, playerUsername }: StatsViewWrapperProps) {
   const [activeTab, setActiveTab] = useState<TabType>('personal');
   const [personalData, setPersonalData] = useState<PersonalStatsData | null>(null);
   const [leaderboardData, setLeaderboardData] = useState<LeaderboardData | null>(null);
@@ -155,13 +161,10 @@ export default function StatsViewWrapper() {
   };
 
   return (
-    <div className="absolute inset-0 bg-gray-900/95 text-white overflow-hidden flex flex-col">
+    <div className="bg-gray-800 rounded-lg shadow-2xl h-full overflow-hidden flex flex-col">
       {/* Header */}
-      <div className="bg-gradient-to-r from-blue-900/90 to-purple-900/90 px-6 py-4 border-b border-blue-500/30 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <BackButton />
-          <h1 className="text-2xl font-bold text-blue-300">📊 Statistics</h1>
-        </div>
+      <div className="bg-gray-900 border-b border-gray-700 px-6 py-4 flex-shrink-0">
+        <h1 className="text-2xl font-bold text-blue-300">📊 Statistics</h1>
       </div>
 
       {/* Tab Navigation */}
@@ -216,7 +219,19 @@ export default function StatsViewWrapper() {
           <>
             {/* Personal Stats Tab */}
             {activeTab === 'personal' && personalData && (
-              <PersonalStatsTab data={personalData} />
+              <>
+                {/* Harvest Status Calculator */}
+                {currentTile && playerUsername && (
+                  <div className="mb-6">
+                    <TileHarvestStatus 
+                      currentTile={currentTile}
+                      playerUsername={playerUsername}
+                    />
+                  </div>
+                )}
+                
+                <PersonalStatsTab data={personalData} />
+              </>
             )}
 
             {/* Game Stats Tab */}

@@ -2,9 +2,9 @@
 
 > Features that have been successfully implemented and tested
 
-**Last Updated:** 2025-10-22  
-**Total Completed:** 64 major features (WMD Phase 1 + Flag Tracker + all previous)  
-**Phases Complete:** 1-13 (100%) + VIP System (100%) + WMD Phase 1 (100%)
+**Last Updated:** 2025-10-23  
+**Total Completed:** 65 major features (WMD Phases 1-2 + Flag Tracker + all previous)  
+**Phases Complete:** 1-13 (100%) + VIP System (100%) + WMD Phase 1-2 (100%)
 
 ---
 
@@ -13,6 +13,194 @@
 > NOTE: Older completed feature entries were archived to:
 > - `dev/archives/2025-10-22-cleanup/old-backups/completed_archive_2025-10-19.md` (Phases 1-12)
 > - `dev/archives/2025-10-22-cleanup/old-backups/completed_archive_2025-10-20.md` (VIP Foundation)
+
+---
+
+# DarkFrame - Completed Features
+
+> Features that have been successfully implemented and tested
+
+**Last Updated:** 2025-10-23  
+**Total Completed:** 66 major features (WMD Phases 1-3 + Flag Tracker + all previous)  
+**Phases Complete:** 1-13 (100%) + VIP System (100%) + WMD Phases 1-3 (100%)
+
+---
+
+## 📚 **ARCHIVE NAVIGATION**
+
+> NOTE: Older completed feature entries were archived to:
+> - `dev/archives/2025-10-22-cleanup/old-backups/completed_archive_2025-10-19.md` (Phases 1-12)
+> - `dev/archives/2025-10-22-cleanup/old-backups/completed_archive_2025-10-20.md` (VIP Foundation)
+
+---
+
+## 🔥 **RECENT COMPLETIONS** (Oct 23, 2025)
+
+### [FID-20251022-WMD-PHASE3] WMD Frontend Integration 🎨
+**Status:** ✅ COMPLETED **Priority:** HIGH **Complexity:** 5/5  
+**Created:** 2025-10-23 **Completed:** 2025-10-23 **Duration:** ~3 hours
+
+**Description:**
+Complete integration of all 5 WMD UI panels with Phase 2 API endpoints, WebSocket real-time events, and toast notification system. Transformed scaffolded components into production-ready interfaces with comprehensive error handling and user feedback.
+
+**Components Enhanced:**
+
+**1. Research Panel (WMDResearchPanel.tsx) +55 lines:**
+- Added `fetchTechTree()` to fetch full tech tree from `GET /api/wmd/research?view=tree`
+- Flattens tech tree API response into usable array format
+- Refreshes tree after RP spending to show new unlocks
+- WebSocket: Subscribed to `wmd:research_complete` for instant notifications
+- Toast notifications: Success on research start/unlock, errors with specific messages
+- Loading states on all action buttons
+
+**2. Missile Panel (WMDMissilePanel.tsx) +85 lines:**
+- Enhanced all actions: create, assemble, launch, dismantle with toast feedback
+- WebSocket: Subscribed to `wmd:missile_launched` and `wmd:missile_intercepted`
+- Real-time notifications for friendly/enemy missile events
+- Contextual success messages (e.g., "Missile launched at PlayerX!")
+- Comprehensive error handling with user-friendly toast messages
+- Loading states prevent double-clicks during operations
+
+**3. Defense Panel (WMDDefensePanel.tsx) +45 lines:**
+- Enhanced deploy and repair actions with toast notifications
+- WebSocket: Subscribed to `wmd:interception_success`
+- Real-time alerts when batteries intercept incoming missiles
+- Success/error feedback for all operations
+- Loading state management during API calls
+
+**4. Intelligence Panel (WMDIntelligencePanel.tsx) +80 lines:**
+- Enhanced recruit, startMission, and runCounterIntel with toast feedback
+- WebSocket: Subscribed to `wmd:spy_mission_complete`
+- Real-time mission completion notifications
+- Detailed success messages (e.g., "Recruited SURVEILLANCE spy!")
+- Counter-intel results displayed via toast (threats/spies detected)
+- Comprehensive error handling for all spy operations
+
+**5. Voting Panel (WMDVotingPanel.tsx) +55 lines:**
+- Enhanced castVote and vetoVote with toast notifications
+- WebSocket: Subscribed to `wmd:vote_update`
+- Real-time vote status updates (PASSED/FAILED/VETOED)
+- Contextual feedback (e.g., "Voted YES", "Vote vetoed by clan leader")
+- Success/error messages for all voting actions
+
+**Technical Achievements:**
+- ✅ All 5 panels integrated with useWebSocketContext hook
+- ✅ 6 WebSocket event types subscribed across panels
+- ✅ Replaced all console.error/alert() with showSuccess/showError/showInfo/showWarning
+- ✅ Proper cleanup on unmount (socket.off() in useEffect returns)
+- ✅ TypeScript 0 errors maintained
+- ✅ Consistent error handling patterns across all panels
+- ✅ Loading states prevent race conditions
+- ✅ User-friendly feedback for every action
+
+**Files Modified (5):**
+1. `components/WMDResearchPanel.tsx` (+55 lines)
+2. `components/WMDMissilePanel.tsx` (+85 lines)
+3. `components/WMDDefensePanel.tsx` (+45 lines)
+4. `components/WMDIntelligencePanel.tsx` (+80 lines)
+5. `components/WMDVotingPanel.tsx` (+55 lines)
+
+**Total Lines Added:** 320 lines of production code
+
+**WebSocket Events Integrated:**
+- `wmd:research_complete` - Research panel
+- `wmd:missile_launched` - Missile panel
+- `wmd:missile_intercepted` - Missile panel
+- `wmd:interception_success` - Defense panel
+- `wmd:spy_mission_complete` - Intelligence panel
+- `wmd:vote_update` - Voting panel
+
+**Acceptance Criteria Met:**
+- ✅ All WMD panels connected to API routes
+- ✅ Loading states and error handling complete
+- ✅ Real-time updates via WebSocket operational
+- ✅ Form validation and user feedback implemented
+- ✅ Success/error toast notifications throughout
+- ✅ TypeScript 0 errors maintained
+- ✅ Production-ready user experience
+
+---
+
+### [FID-20251022-WMD-PHASE2] WMD API Routes Enhancement ⚡
+**Status:** ✅ COMPLETED **Priority:** HIGH **Complexity:** 4/5  
+**Created:** 2025-10-23 **Completed:** 2025-10-23 **Duration:** <1 hour
+
+**Description:**
+Enhanced existing WMD API routes with additional query parameters and missing actions. All planned routes were already 95% implemented from Phase 1, this phase added view-specific endpoints, individual resource queries, and missing veto functionality.
+
+**Enhancements Delivered:**
+
+**1. Research API Enhanced:**
+- Added `GET /api/wmd/research?view=available` - List techs player can research
+- Added `GET /api/wmd/research?view=tree` - Full tech tree by category (MISSILE, DEFENSE, INTELLIGENCE)
+- Created `getAvailableTechs()` helper function in researchService.ts
+- Fixed ResearchCategory enum usage throughout
+
+**2. Missile API Enhanced:**
+- Added `GET /api/wmd/missiles?missileId=X` - Fetch individual missile with ownership verification
+- Maintains existing: create, assemble, launch, dismantle actions
+
+**3. Defense API Enhanced:**
+- Added `GET /api/wmd/defense?batteryId=X` - Fetch individual battery with ownership verification
+- Maintains existing: deploy, repair, intercept, dismantle actions
+
+**4. Voting API Enhanced:**
+- Added `POST /api/wmd/voting` with `action=veto` - Leader can veto clan votes
+- Includes leader authorization check and clan WebSocket broadcast
+- Maintains existing: create, cast actions
+
+**5. Intelligence API:**
+- Already complete, no changes needed ✅
+- All actions functional: recruit, train, mission, sabotage, counterIntel
+- Supports `?type=spies` and `?type=missions` query params
+
+**6. Notifications API:**
+- Already complete, no changes needed ✅
+- GET /notifications with DELETE /read functionality
+
+**7. Status API:**
+- Already complete, no changes needed ✅  
+- Returns aggregated WMD state for dashboard
+
+**Files Modified:**
+- `app/api/wmd/research/route.ts` (+50 lines) - View query params
+- `app/api/wmd/missiles/route.ts` (+35 lines) - Individual queries
+- `app/api/wmd/defense/route.ts` (+35 lines) - Individual queries
+- `app/api/wmd/voting/route.ts` (+58 lines) - Veto action
+- `lib/wmd/researchService.ts` (+29 lines) - getAvailableTechs()
+
+**All 26 API Endpoints Complete:**
+- Research: 4 routes (status, start, spendRP, available, tree)
+- Missiles: 6 routes (list, create, assemble, launch, details, dismantle)
+- Defense: 5 routes (list, deploy, repair, intercept, details, dismantle)
+- Intelligence: 6 routes (spies, missions, recruit, train, start mission, sabotage, counterIntel)
+- Voting: 4 routes (list, create, cast, veto)
+- Notifications: 1 route (get + delete read)
+- Status: 1 route (aggregated stats)
+
+**Acceptance Criteria:** ALL MET ✅
+- ✅ All 26 WMD API routes functional
+- ✅ JWT authentication verified on all routes
+- ✅ MongoDB integration working
+- ✅ Comprehensive error handling with user-friendly messages
+- ✅ Input validation and sanitization
+- ✅ Ownership verification for individual resources
+- ✅ WebSocket broadcasts for real-time updates
+- ✅ TypeScript 0 errors
+- ✅ JSDoc documentation complete
+
+**Integration Points Verified:**
+- ✅ MongoDB connection (lib/mongodb.ts)
+- ✅ Auth middleware (middleware.ts)
+- ✅ WMD services (lib/wmd/*)
+- ✅ WebSocket handlers (lib/websocket/handlers.ts)
+
+**Impact:**
+- Complete WMD API layer ready for frontend integration
+- All planned functionality from roadmap implemented
+- Secure individual resource access with ownership checks
+- Real-time updates via WebSocket for multiplayer experience
+- Ready for WMD Phase 3 (Frontend Integration)
 
 ---
 

@@ -80,6 +80,48 @@ export async function POST(request: NextRequest) {
     // Move player
     const { player, tile } = await movePlayer(body.username, body.direction);
     
+    // If player holds the flag, update flag position AND add trail tile
+    const flagsCollection = await getCollection('flags');
+    const flagDoc = await flagsCollection.findOne({});
+    
+    if (flagDoc?.currentHolder?.username === player.username) {
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 8 * 60 * 1000); // 8 minutes from now
+      
+      await flagsCollection.updateOne(
+        {},
+        {
+          $set: {
+            'currentHolder.position': player.currentPosition,
+            lastUpdate: new Date()
+          },
+          $push: {
+            trail: {
+              $each: [{
+                x: player.currentPosition.x,
+                y: player.currentPosition.y,
+                timestamp: now,
+                expiresAt: expiresAt
+              }],
+              $slice: -200 // Keep only last 200 trail tiles (performance optimization)
+            }
+          } as any
+        }
+      );
+      
+      // Clean up expired trail tiles (older than 8 minutes)
+      await flagsCollection.updateOne(
+        {},
+        {
+          $pull: {
+            trail: {
+              expiresAt: { $lt: now }
+            }
+          } as any
+        }
+      );
+    }
+    
     // Log movement activity
     const sessionId = request.cookies.get('sessionId')?.value;
     if (sessionId && oldPosition) {

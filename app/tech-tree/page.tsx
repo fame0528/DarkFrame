@@ -28,13 +28,16 @@ import {
   Check,
   Clock
 } from 'lucide-react';
-import { GameLayout, StatsPanel, ControlsPanel } from '@/components';
-import TopNavBar from '@/components/TopNavBar';
 import { useGameContext } from '@/context/GameContext';
+import BackButton from '@/components/BackButton';
 
 // ============================================================
 // TYPE DEFINITIONS
 // ============================================================
+
+interface TechTreePageProps {
+  embedded?: boolean; // When true, renders without TopNavBar and GameLayout
+}
 
 interface Technology {
   id: string;
@@ -261,7 +264,7 @@ const TECHNOLOGIES: Technology[] = [
  * - Track research progress
  * - View unlocked technologies
  */
-export default function TechTreePage() {
+export default function TechTreePage({ embedded = false }: TechTreePageProps = {}) {
   const router = useRouter();
   const { player, refreshGameState } = useGameContext();
   const [technologies, setTechnologies] = useState<Technology[]>(TECHNOLOGIES);
@@ -365,52 +368,42 @@ export default function TechTreePage() {
       <div className="min-h-screen bg-gradient-to-b from-gray-900 via-blue-900/20 to-gray-900 flex items-center justify-center">
         <div className="text-center">
           <p className="text-white/70 mb-4">Loading player data...</p>
-          <button
-            onClick={() => router.push('/game')}
-            className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded"
-          >
-            Return to Game
-          </button>
+          {!embedded && (
+            <button
+              onClick={() => router.push('/game')}
+              className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-2 px-4 rounded"
+            >
+              Return to Game
+            </button>
+          )}
         </div>
       </div>
     );
   }
 
   const renderTechTreeContent = () => (
-    <div className="h-full w-full overflow-auto bg-gradient-to-b from-gray-900 via-blue-900/20 to-gray-900">
+    <div className="bg-gray-800 rounded-lg shadow-2xl h-full overflow-hidden flex flex-col">
       {/* Header */}
-      <div className="bg-gray-900/80 backdrop-blur-md border-b-2 border-cyan-500/30 p-6">
-        <div className="max-w-7xl mx-auto">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-4">
-              <button
-                onClick={() => router.push('/game')}
-                className="flex items-center gap-2 text-cyan-400 hover:text-cyan-300 transition-colors"
-              >
-                <ArrowLeft className="w-5 h-5" />
-                <span>Back to Game</span>
-              </button>
-              <div className="h-8 w-px bg-cyan-500/30"></div>
-              <h1 className="text-3xl font-bold text-white flex items-center gap-3">
-                <Zap className="w-8 h-8 text-cyan-400" />
-                Technology Tree
-              </h1>
-            </div>
-            <div className="text-right">
-              <p className="text-white/50 text-sm">Available Metal</p>
-              <p className="text-2xl font-bold text-gray-400">⚙️ {player.resources.metal.toLocaleString()}</p>
-            </div>
+      <div className="bg-gray-900 border-b border-gray-700 p-6 flex-shrink-0">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <Zap className="w-8 h-8 text-cyan-400" />
+            <h1 className="text-3xl font-bold text-white">Technology Tree</h1>
           </div>
-
-          {error && (
-            <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-3 text-red-400">
-              {error}
-            </div>
-          )}
+          <div className="text-right">
+            <p className="text-white/50 text-sm">Available Metal</p>
+            <p className="text-2xl font-bold text-gray-400">⚙️ {player.resources.metal.toLocaleString()}</p>
+          </div>
         </div>
+
+        {error && (
+          <div className="bg-red-500/20 border border-red-500/50 rounded-lg p-3 text-red-400">
+            {error}
+          </div>
+        )}
       </div>
 
-      <div className="max-w-7xl mx-auto p-6">
+      <div className="flex-1 overflow-auto p-6">
         {/* Categories */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {technologies.map(tech => {
@@ -528,16 +521,13 @@ export default function TechTreePage() {
     </div>
   );
 
-  return (
-    <>
-      <TopNavBar />
-      <GameLayout
-        statsPanel={<StatsPanel />}
-        controlsPanel={<ControlsPanel />}
-        tileView={renderTechTreeContent()}
-      />
-    </>
-  );
+  // If embedded, return just the content
+  if (embedded) {
+    return renderTechTreeContent();
+  }
+
+  // Otherwise, return standalone page (shouldn't be used per project rules)
+  return renderTechTreeContent();
 }
 
 // ============================================================

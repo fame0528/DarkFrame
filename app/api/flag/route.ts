@@ -14,7 +14,12 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { type FlagBearer, type FlagAPIResponse, type FlagAttackRequest, type FlagAttackResponse } from '@/types/flag.types';
+import { getDatabase } from '@/lib/mongodb';
+import { getAuthenticatedUser } from '@/lib/authMiddleware';
+import { ObjectId } from 'mongodb';
+import { type FlagBearer, type FlagAPIResponse, type FlagAttackRequest, type FlagAttackResponse, FLAG_CONFIG } from '@/types/flag.types';
+import { calculateDistance } from '@/lib/flagService';
+import { handleFlagBotDefeat } from '@/lib/flagBotService';
 
 /**
  * GET /api/flag
@@ -35,13 +40,11 @@ import { type FlagBearer, type FlagAPIResponse, type FlagAttackRequest, type Fla
  */
 export async function GET(request: NextRequest): Promise<NextResponse<FlagAPIResponse<FlagBearer | null>>> {
   try {
-    // TODO: Replace with actual database query
-    // This is a mock implementation for testing
+    const db = await getDatabase();
+    const flagDoc = await db.collection('flags').findOne({});
     
-    // Check if there's a current Flag Bearer
-    const hasBearer = Math.random() > 0.3; // 70% chance of having a bearer (for testing)
-    
-    if (!hasBearer) {
+    // No flag holder found
+    if (!flagDoc || !flagDoc.currentHolder) {
       return NextResponse.json({
         success: true,
         data: null,
@@ -49,24 +52,48 @@ export async function GET(request: NextRequest): Promise<NextResponse<FlagAPIRes
       });
     }
     
-    // Mock Flag Bearer data
-    const mockBearer: FlagBearer = {
-      playerId: 'player-123',
-      username: 'DarkLord42',
-      level: 47,
-      position: {
-        x: Math.floor(Math.random() * 150) + 1, // Random position 1-150
-        y: Math.floor(Math.random() * 150) + 1
-      },
-      claimedAt: new Date(Date.now() - 1200000), // 20 minutes ago
-      holdDuration: 1200, // 20 minutes in seconds
-      currentHP: 8500,
-      maxHP: 12000
+    const holder = flagDoc.currentHolder;
+    
+    // Get current HP from holder (player or bot)
+    const holderId = holder.playerId || holder.botId;
+    const holderDoc = await db.collection('players').findOne({ _id: holderId });
+    
+    if (!holderDoc) {
+      return NextResponse.json({
+        success: true,
+        data: null,
+        timestamp: new Date()
+      });
+    }
+    
+    // Calculate hold duration in seconds
+    const holdDuration = Math.floor((Date.now() - holder.claimedAt.getTime()) / 1000);
+    
+    // Get trail data (filter out expired tiles)
+    const now = new Date();
+    const trail = (flagDoc.trail || []).filter((t: any) => new Date(t.expiresAt) > now);
+    
+    // Build FlagBearer response
+    const bearer: FlagBearer = {
+      playerId: holder.playerId?.toString() || '',
+      username: holder.username,
+      level: holder.level,
+      position: holder.position,
+      claimedAt: holder.claimedAt,
+      holdDuration,
+      currentHP: holderDoc.currentHP || 1000,
+      maxHP: holderDoc.maxHP || 1000,
+      trail: trail.map((t: any) => ({
+        x: t.x,
+        y: t.y,
+        timestamp: t.timestamp,
+        expiresAt: t.expiresAt
+      }))
     };
     
     return NextResponse.json({
       success: true,
-      data: mockBearer,
+      data: bearer,
       timestamp: new Date()
     });
     
@@ -113,6 +140,16 @@ export async function GET(request: NextRequest): Promise<NextResponse<FlagAPIRes
  */
 export async function POST(request: NextRequest): Promise<NextResponse<FlagAPIResponse<FlagAttackResponse>>> {
   try {
+    // Authentication
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return NextResponse.json({
+        success: false,
+        error: 'Unauthorized - please log in',
+        timestamp: new Date()
+      }, { status: 401 });
+    }
+    
     const body: FlagAttackRequest = await request.json();
     
     // Validate request
@@ -124,25 +161,120 @@ export async function POST(request: NextRequest): Promise<NextResponse<FlagAPIRe
       }, { status: 400 });
     }
     
-    // TODO: Implement actual attack logic
-    // - Verify attacker is authenticated
-    // - Check attack range (must be within 5 tiles)
-    // - Verify attack cooldown
-    // - Calculate damage
-    // - Update bearer HP
-    // - Handle bearer defeat (flag transfer)
-    // - Broadcast WebSocket event
+    const db = await getDatabase();
     
-    // Mock attack response (for testing)
-    const mockAttackResponse: FlagAttackResponse = {
-      success: true,
-      damage: 100,
-      bearerDefeated: false
-    };
+    // Get attacker from database
+    const attacker = await db.collection('players').findOne({ username: user.username });
+    if (!attacker) {
+      return NextResponse.json({
+        success: false,
+        error: 'Attacker not found',
+        timestamp: new Date()
+      }, { status: 404 });
+    }
+    
+    // Check attack cooldown (60 seconds)
+    if (attacker.lastFlagAttack) {
+      const timeSince = Date.now() - attacker.lastFlagAttack.getTime();
+      const cooldownMs = FLAG_CONFIG.ATTACK_COOLDOWN * 1000;
+      
+      if (timeSince < cooldownMs) {
+        const remainingSeconds = Math.ceil((cooldownMs - timeSince) / 1000);
+        return NextResponse.json({
+          success: false,
+          error: `Attack cooldown active. Wait ${remainingSeconds} seconds.`,
+          timestamp: new Date()
+        }, { status: 429 });
+      }
+    }
+    
+    // Get flag holder
+    const flagDoc = await db.collection('flags').findOne({});
+    if (!flagDoc || !flagDoc.currentHolder) {
+      return NextResponse.json({
+        success: false,
+        error: 'No flag bearer found',
+        timestamp: new Date()
+      }, { status: 404 });
+    }
+    
+    const holder = flagDoc.currentHolder;
+    
+    // Prevent self-attack
+    if (holder.playerId && holder.playerId.toString() === attacker._id.toString()) {
+      return NextResponse.json({
+        success: false,
+        error: 'Cannot attack yourself',
+        timestamp: new Date()
+      }, { status: 400 });
+    }
+    
+    // Validate attack range (5 tiles)
+    const distance = calculateDistance(body.attackerPosition, holder.position);
+    if (distance > FLAG_CONFIG.ATTACK_RANGE) {
+      return NextResponse.json({
+        success: false,
+        error: `Out of range. Distance: ${distance} tiles, max: ${FLAG_CONFIG.ATTACK_RANGE} tiles.`,
+        timestamp: new Date()
+      }, { status: 400 });
+    }
+    
+    // Get holder from database
+    const holderId = holder.playerId || holder.botId;
+    const holderDoc = await db.collection('players').findOne({ _id: holderId });
+    
+    if (!holderDoc) {
+      return NextResponse.json({
+        success: false,
+        error: 'Flag bearer not found in database',
+        timestamp: new Date()
+      }, { status: 404 });
+    }
+    
+    // Apply damage
+    const damage = FLAG_CONFIG.BASE_ATTACK_DAMAGE;
+    const currentHP = holderDoc.currentHP || 1000;
+    const newHP = currentHP - damage;
+    
+    // Update attacker cooldown
+    await db.collection('players').updateOne(
+      { _id: attacker._id },
+      { $set: { lastFlagAttack: new Date() } }
+    );
+    
+    // Handle defeat (HP <= 0)
+    if (newHP <= 0) {
+      // Transfer flag to attacker
+      await handleFlagBotDefeat(holderId, new ObjectId(attacker._id));
+      
+      return NextResponse.json({
+        success: true,
+        data: {
+          success: true,
+          damage,
+          bearerDefeated: true,
+          newBearerUsername: attacker.username,
+          message: `You defeated ${holder.username} and claimed the flag!`
+        },
+        timestamp: new Date()
+      });
+    }
+    
+    // Update HP (no defeat)
+    await db.collection('players').updateOne(
+      { _id: holderId },
+      { $set: { currentHP: newHP } }
+    );
     
     return NextResponse.json({
       success: true,
-      data: mockAttackResponse,
+      data: {
+        success: true,
+        damage,
+        bearerDefeated: false,
+        remainingHP: newHP,
+        message: `Dealt ${damage} damage to ${holder.username}! Remaining HP: ${newHP}`
+      },
       timestamp: new Date()
     });
     
@@ -161,36 +293,37 @@ export async function POST(request: NextRequest): Promise<NextResponse<FlagAPIRe
  * IMPLEMENTATION NOTES:
  * 
  * 1. **GET /api/flag:**
- *    - Returns current Flag Bearer or null if unclaimed
- *    - Includes all bearer info (position, hold duration, HP)
- *    - Called on component mount and periodically
- *    - Should be fast (<100ms) for real-time UX
+ *    - Queries flags MongoDB collection for current holder
+ *    - Returns FlagBearer with real-time HP from players collection
+ *    - Calculates hold duration dynamically
+ *    - Returns null if no holder (triggers UI to show "unclaimed")
+ *    - Fast query (<100ms) for real-time UX
  * 
  * 2. **POST /api/flag/attack:**
- *    - Validates attacker authentication
- *    - Checks attack range (must be within 5 tiles)
- *    - Verifies cooldown (60 seconds between attacks)
- *    - Calculates damage and updates bearer HP
- *    - Handles bearer defeat and flag transfer
- *    - Broadcasts WebSocket event to all players
+ *    - Authentication required via getAuthenticatedUser()
+ *    - Validates 60-second attack cooldown per player
+ *    - Checks 5-tile attack range using calculateDistance()
+ *    - Prevents self-attacks
+ *    - Applies 100 damage per attack (FLAG_CONFIG.BASE_ATTACK_DAMAGE)
+ *    - Transfers flag on bearer defeat (HP <= 0)
+ *    - Updates attacker cooldown in database
  * 
- * 3. **Future Enhancements:**
- *    - Database integration (replace mocks)
- *    - Authentication middleware
- *    - Rate limiting for attack spam prevention
- *    - Leaderboard for longest flag holds
- *    - Battle log for attack history
+ * 3. **Database Integration:**
+ *    - flags collection: Singleton document with currentHolder
+ *    - players collection: Stores currentHP, maxHP, lastFlagAttack
+ *    - Transfer history tracked in flags.transferHistory array
+ *    - All mocks removed (Lesson #35 compliance)
  * 
  * 4. **Security:**
- *    - Validate all input coordinates (1-150 range)
- *    - Verify attacker owns the session
- *    - Prevent self-attacks
- *    - Rate limit API calls
- *    - Sanitize error messages (no internal details)
+ *    - JWT authentication via middleware
+ *    - Input validation (position, targetPlayerId)
+ *    - Cooldown enforcement prevents spam
+ *    - Range validation prevents teleport attacks
  * 
- * 5. **Performance:**
- *    - Cache Flag Bearer data (5 second TTL)
- *    - Optimize distance calculations (done once per request)
- *    - Batch WebSocket broadcasts
- *    - Database indexes on playerId, position
+ * 5. **Flag Bot Lifecycle:**
+ *    - Spawns at random location (1-150, 1-150)
+ *    - Teleports to new random location every 30 min (cron)
+ *    - Resets if unclaimed for > 1 hour
+ *    - See /lib/flagBotService.ts for details
  */
+

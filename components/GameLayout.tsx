@@ -58,9 +58,9 @@ const GameLayout = memo(function GameLayout({ statsPanel, tileView, controlsPane
       )}
 
       {/* Main Game Area */}
-      <div className="relative z-10 flex flex-col lg:flex-row h-[calc(100vh-56px)]">
+      <div className="relative z-10 flex flex-row h-[calc(100vh-56px)]">
         {/* Left Column - Stats + Battle Logs */}
-        <aside className="w-full lg:w-80 bg-gray-800/40 backdrop-blur-sm border-2 border-cyan-500/30 shadow-[0_0_20px_rgba(0,240,255,0.2)] flex flex-col overflow-hidden" aria-label="Player statistics">
+        <aside className="w-80 bg-gray-800/40 backdrop-blur-sm border-2 border-cyan-500/30 shadow-[0_0_20px_rgba(0,240,255,0.2)] flex flex-col overflow-hidden" aria-label="Player statistics">
           {/* Stats Panel (Scrollable) */}
           <div className="flex-1 overflow-y-auto">
             <ErrorBoundary>
@@ -86,7 +86,7 @@ const GameLayout = memo(function GameLayout({ statsPanel, tileView, controlsPane
         </main>
 
         {/* Right Panel - Controls */}
-        <aside className="w-full lg:w-80 bg-gray-800/40 backdrop-blur-sm border-2 border-cyan-500/30 shadow-[0_0_20px_rgba(0,240,255,0.2)] overflow-y-auto" aria-label="Game controls">
+        <aside className="w-80 bg-gray-800/40 backdrop-blur-sm border-2 border-cyan-500/30 shadow-[0_0_20px_rgba(0,240,255,0.2)] overflow-y-auto" aria-label="Game controls">
           <ErrorBoundary>
             {controlsPanel}
           </ErrorBoundary>

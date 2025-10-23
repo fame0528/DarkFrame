@@ -25,6 +25,8 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Input } from '@/components/ui/Input';
+import { useWebSocketContext } from '@/context/WebSocketContext';
+import { showSuccess, showError, showInfo } from '@/lib/toastService';
 
 interface Missile {
   missileId: string;
@@ -48,10 +50,38 @@ export default function WMDMissilePanel() {
   const [targetId, setTargetId] = useState('');
   const [creatingMissile, setCreatingMissile] = useState(false);
   const [selectedWarhead, setSelectedWarhead] = useState('TACTICAL');
+  const { socket, isConnected } = useWebSocketContext();
 
   useEffect(() => {
     fetchMissiles();
   }, []);
+
+  // WebSocket event subscriptions
+  useEffect(() => {
+    if (!socket || !isConnected) return;
+
+    const handleMissileLaunched = (payload: any) => {
+      showInfo(`Missile launched by ${payload.launcherUsername} targeting ${payload.targetUsername}`);
+      fetchMissiles();
+    };
+
+    const handleMissileIntercepted = (payload: any) => {
+      if (payload.isYourMissile) {
+        showError(`Your missile was intercepted by ${payload.defenderUsername}!`);
+      } else {
+        showSuccess(`Successfully intercepted incoming missile!`);
+      }
+      fetchMissiles();
+    };
+
+    socket.on('wmd:missile_launched', handleMissileLaunched);
+    socket.on('wmd:missile_intercepted', handleMissileIntercepted);
+
+    return () => {
+      socket.off('wmd:missile_launched', handleMissileLaunched);
+      socket.off('wmd:missile_intercepted', handleMissileIntercepted);
+    };
+  }, [socket, isConnected]);
 
   const fetchMissiles = async () => {
     try {
@@ -77,62 +107,90 @@ export default function WMDMissilePanel() {
       });
       const data = await res.json();
       if (data.success) {
+        showSuccess(`Created ${selectedWarhead} missile!`);
         await fetchMissiles();
       } else {
-        alert(data.error || 'Failed to create missile');
+        showError(data.error || 'Failed to create missile');
       }
+    } catch (error) {
+      showError('Error creating missile');
+      console.error('Error creating missile:', error);
     } finally {
       setCreatingMissile(false);
     }
   };
 
   const assembleComponent = async (missileId: string, component: string) => {
-    const res = await fetch('/api/wmd/missiles', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'assemble', missileId, component }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      await fetchMissiles();
-    } else {
-      alert(data.error || 'Failed to assemble component');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/wmd/missiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'assemble', missileId, component }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showSuccess(`Assembled ${component} component!`);
+        await fetchMissiles();
+      } else {
+        showError(data.error || 'Failed to assemble component');
+      }
+    } catch (error) {
+      showError('Error assembling component');
+      console.error('Error assembling component:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
   const launchMissile = async (missileId: string) => {
     if (!targetId.trim()) {
-      alert('Please enter a target player username');
+      showError('Please enter a target player username');
       return;
     }
 
-    const res = await fetch('/api/wmd/missiles', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'launch', missileId, targetId: targetId.trim() }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      alert('Missile launched successfully!');
-      setSelectedMissile(null);
-      setTargetId('');
-      await fetchMissiles();
-    } else {
-      alert(data.error || 'Failed to launch missile');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/wmd/missiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'launch', missileId, targetId: targetId.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showSuccess(`Missile launched at ${targetId}!`);
+        setSelectedMissile(null);
+        setTargetId('');
+        await fetchMissiles();
+      } else {
+        showError(data.error || 'Failed to launch missile');
+      }
+    } catch (error) {
+      showError('Error launching missile');
+      console.error('Error launching missile:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
   const dismantleMissile = async (missileId: string) => {
-    if (!confirm('Dismantle this missile? This cannot be undone.')) return;
-
-    const res = await fetch(`/api/wmd/missiles?missileId=${missileId}`, {
-      method: 'DELETE',
-    });
-    const data = await res.json();
-    if (data.success) {
-      await fetchMissiles();
-    } else {
-      alert(data.error || 'Failed to dismantle missile');
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/wmd/missiles?missileId=${missileId}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (data.success) {
+        showSuccess('Missile dismantled');
+        await fetchMissiles();
+      } else {
+        showError(data.error || 'Failed to dismantle missile');
+      }
+    } catch (error) {
+      showError('Error dismantling missile');
+      console.error('Error dismantling missile:', error);
+    } finally {
+      setLoading(false);
     }
   };
 

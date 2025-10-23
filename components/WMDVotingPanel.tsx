@@ -23,6 +23,8 @@ import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
+import { useWebSocketContext } from '@/context/WebSocketContext';
+import { showSuccess, showError, showInfo } from '@/lib/toastService';
 
 interface ClanVote {
   voteId: string;
@@ -42,12 +44,37 @@ interface ClanVote {
 export default function WMDVotingPanel() {
   const [votes, setVotes] = useState<ClanVote[]>([]);
   const [loading, setLoading] = useState(true);
+  const { socket, isConnected } = useWebSocketContext();
 
   useEffect(() => {
     fetchVotes();
     const interval = setInterval(fetchVotes, 10000);
     return () => clearInterval(interval);
   }, []);
+
+  // WebSocket event subscriptions
+  useEffect(() => {
+    if (!socket || !isConnected) return;
+
+    const handleVoteUpdate = (payload: any) => {
+      if (payload.status === 'PASSED') {
+        showSuccess(`Vote passed: ${payload.voteType}`);
+      } else if (payload.status === 'FAILED') {
+        showError(`Vote failed: ${payload.voteType}`);
+      } else if (payload.status === 'VETOED') {
+        showInfo(`Vote vetoed by clan leader`);
+      } else {
+        showInfo(`Vote updated: ${payload.voteType}`);
+      }
+      fetchVotes();
+    };
+
+    socket.on('wmd:vote_update', handleVoteUpdate);
+
+    return () => {
+      socket.off('wmd:vote_update', handleVoteUpdate);
+    };
+  }, [socket, isConnected]);
 
   const fetchVotes = async () => {
     try {
@@ -64,16 +91,48 @@ export default function WMDVotingPanel() {
   };
 
   const castVote = async (voteId: string, vote: boolean) => {
-    const res = await fetch('/api/wmd/voting', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'cast', voteId, vote }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      await fetchVotes();
-    } else {
-      alert(data.error || 'Failed to cast vote');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/wmd/voting', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cast', voteId, vote }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showSuccess(vote ? 'Voted YES' : 'Voted NO');
+        await fetchVotes();
+      } else {
+        showError(data.error || 'Failed to cast vote');
+      }
+    } catch (error) {
+      showError('Error casting vote');
+      console.error('Error casting vote:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const vetoVote = async (voteId: string, reason?: string) => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/wmd/voting', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'veto', voteId, reason }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showSuccess('Vote vetoed successfully');
+        await fetchVotes();
+      } else {
+        showError(data.error || 'Failed to veto vote');
+      }
+    } catch (error) {
+      showError('Error vetoing vote');
+      console.error('Error vetoing vote:', error);
+    } finally {
+      setLoading(false);
     }
   };
 

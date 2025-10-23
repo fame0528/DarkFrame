@@ -29,7 +29,10 @@ import { wmdHandlers } from '@/lib/websocket/handlers';
 
 /**
  * GET /api/wmd/defense
- * Fetch player's defense batteries
+ * Fetch player's defense batteries or specific battery details
+ * 
+ * Query params:
+ * - batteryId: string (optional) - Get specific battery details
  */
 export async function GET(req: NextRequest) {
   try {
@@ -40,6 +43,35 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     
+    const { searchParams } = new URL(req.url);
+    const batteryId = searchParams.get('batteryId');
+    
+    // Get specific battery details
+    if (batteryId) {
+      const battery = await db.collection('wmd_defense_batteries').findOne({ batteryId });
+      
+      if (!battery) {
+        return NextResponse.json(
+          { error: 'Battery not found' },
+          { status: 404 }
+        );
+      }
+      
+      // Verify ownership
+      if (battery.ownerId !== auth.playerId) {
+        return NextResponse.json(
+          { error: 'Unauthorized - not your battery' },
+          { status: 403 }
+        );
+      }
+      
+      return NextResponse.json({
+        success: true,
+        battery,
+      });
+    }
+    
+    // Get all player batteries
     const batteries = await getPlayerBatteries(db, auth.playerId);
     
     return NextResponse.json({

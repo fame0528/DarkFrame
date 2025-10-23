@@ -25,6 +25,8 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Input } from '@/components/ui/Input';
+import { useWebSocketContext } from '@/context/WebSocketContext';
+import { showSuccess, showError, showInfo, showWarning } from '@/lib/toastService';
 
 interface Spy {
   spyId: string;
@@ -53,12 +55,29 @@ export default function WMDIntelligencePanel() {
   const [view, setView] = useState<'spies' | 'missions'>('spies');
   const [selectedSpec, setSelectedSpec] = useState('SURVEILLANCE');
   const [targetId, setTargetId] = useState('');
+  const { socket, isConnected } = useWebSocketContext();
 
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 15000);
     return () => clearInterval(interval);
   }, [view]);
+
+  // WebSocket event subscriptions
+  useEffect(() => {
+    if (!socket || !isConnected) return;
+
+    const handleMissionComplete = (payload: any) => {
+      showInfo(`Mission complete: ${payload.missionType}`);
+      fetchData();
+    };
+
+    socket.on('wmd:spy_mission_complete', handleMissionComplete);
+
+    return () => {
+      socket.off('wmd:spy_mission_complete', handleMissionComplete);
+    };
+  }, [socket, isConnected]);
 
   const fetchData = async () => {
     try {
@@ -76,59 +95,81 @@ export default function WMDIntelligencePanel() {
   };
 
   const recruitSpy = async () => {
-    const res = await fetch('/api/wmd/intelligence', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'recruit', specialization: selectedSpec }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      await fetchData();
-    } else {
-      alert(data.error || 'Failed to recruit spy');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/wmd/intelligence', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'recruit', specialization: selectedSpec }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showSuccess(`Recruited ${selectedSpec} spy!`);
+        await fetchData();
+      } else {
+        showError(data.error || 'Failed to recruit spy');
+      }
+    } catch (error) {
+      showError('Error recruiting spy');
+      console.error('Error recruiting spy:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
   const startMission = async (spyId: string, missionType: string) => {
     if (!targetId.trim()) {
-      alert('Please enter a target player username');
+      showError('Please enter a target player username');
       return;
     }
 
-    const res = await fetch('/api/wmd/intelligence', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        action: 'mission', 
-        spyId, 
-        missionType,
-        targetId: targetId.trim() 
-      }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      alert('Mission started successfully!');
-      setTargetId('');
-      await fetchData();
-    } else {
-      alert(data.error || 'Failed to start mission');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/wmd/intelligence', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          action: 'mission', 
+          spyId, 
+          missionType,
+          targetId: targetId.trim() 
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showSuccess(`Mission started: ${missionType}`);
+        setTargetId('');
+        await fetchData();
+      } else {
+        showError(data.error || 'Failed to start mission');
+      }
+    } catch (error) {
+      showError('Error starting mission');
+      console.error('Error starting mission:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
   const runCounterIntel = async () => {
-    const res = await fetch('/api/wmd/intelligence', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'counterIntel' }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      alert(`Counter-Intel Sweep: ${data.threatsDetected} threats detected`);
-      if (data.spiesDetected.length > 0) {
-        alert(`Detected spies:\n${data.spiesDetected.map((s: any) => `- ${s.codename} (${s.specialization})`).join('\n')}`);
+    setLoading(true);
+    try {
+      const res = await fetch('/api/wmd/intelligence', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'counterIntel' }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showInfo(`Counter-Intel: ${data.threatsDetected} threats, ${data.spiesDetected.length} spies detected`);
+      } else {
+        showError(data.error || 'Counter-intel failed');
       }
-    } else {
-      alert(data.error || 'Counter-intel failed');
+    } catch (error) {
+      showError('Error running counter-intel');
+      console.error('Error running counter-intel:', error);
+    } finally {
+      setLoading(false);
     }
   };
 

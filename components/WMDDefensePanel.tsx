@@ -23,6 +23,8 @@ import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
+import { useWebSocketContext } from '@/context/WebSocketContext';
+import { showSuccess, showError, showInfo } from '@/lib/toastService';
 
 interface DefenseBattery {
   batteryId: string;
@@ -44,12 +46,29 @@ export default function WMDDefensePanel() {
   const [loading, setLoading] = useState(true);
   const [deploying, setDeploying] = useState(false);
   const [selectedType, setSelectedType] = useState('BASIC');
+  const { socket, isConnected } = useWebSocketContext();
 
   useEffect(() => {
     fetchBatteries();
     const interval = setInterval(fetchBatteries, 15000);
     return () => clearInterval(interval);
   }, []);
+
+  // WebSocket event subscriptions
+  useEffect(() => {
+    if (!socket || !isConnected) return;
+
+    const handleInterceptionSuccess = (payload: any) => {
+      showSuccess(`Battery ${payload.batteryId} intercepted incoming missile!`);
+      fetchBatteries();
+    };
+
+    socket.on('wmd:interception_success', handleInterceptionSuccess);
+
+    return () => {
+      socket.off('wmd:interception_success', handleInterceptionSuccess);
+    };
+  }, [socket, isConnected]);
 
   const fetchBatteries = async () => {
     try {
@@ -75,26 +94,39 @@ export default function WMDDefensePanel() {
       });
       const data = await res.json();
       if (data.success) {
+        showSuccess(`Deployed ${selectedType} defense battery!`);
         await fetchBatteries();
       } else {
-        alert(data.error || 'Failed to deploy battery');
+        showError(data.error || 'Failed to deploy battery');
       }
+    } catch (error) {
+      showError('Error deploying battery');
+      console.error('Error deploying battery:', error);
     } finally {
       setDeploying(false);
     }
   };
 
   const repairBattery = async (batteryId: string) => {
-    const res = await fetch('/api/wmd/defense', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'repair', batteryId }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      await fetchBatteries();
-    } else {
-      alert(data.error || 'Failed to repair battery');
+    setLoading(true);
+    try {
+      const res = await fetch('/api/wmd/defense', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'repair', batteryId }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showSuccess('Battery repair started!');
+        await fetchBatteries();
+      } else {
+        showError(data.error || 'Failed to repair battery');
+      }
+    } catch (error) {
+      showError('Error repairing battery');
+      console.error('Error repairing battery:', error);
+    } finally {
+      setLoading(false);
     }
   };
 

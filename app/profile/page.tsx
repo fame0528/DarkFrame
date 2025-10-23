@@ -17,6 +17,10 @@ import BackButton from '@/components/BackButton';
 import { RichTextEditor } from '@/components/ui';
 import { SafeHtmlRenderer } from '@/components/SafeHtmlRenderer';
 
+interface ProfilePageProps {
+  embedded?: boolean; // When true, renders without standalone page wrapper
+}
+
 interface ProfileData {
   username: string;
   level: number;
@@ -44,7 +48,7 @@ interface ProfileData {
   joinedAt: string;
 }
 
-export default function ProfilePage() {
+export default function ProfilePage({ embedded = false }: ProfilePageProps = {}) {
   const router = useRouter();
   const { player, refreshGameState } = useGameContext();
   const [profileData, setProfileData] = useState<ProfileData | null>(null);
@@ -112,19 +116,21 @@ export default function ProfilePage() {
 
   if (!player) {
     return (
-      <div className="min-h-screen bg-gradient-to-b from-gray-900 to-black text-white flex items-center justify-center">
-        <p>Loading...</p>
+      <div className="bg-gray-800 rounded-lg shadow-2xl h-full overflow-hidden flex items-center justify-center p-8">
+        <p className="text-white">Loading...</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-gray-900 to-black text-white p-8">
-      <div className="max-w-5xl mx-auto">
-        <BackButton />
+    <div className="bg-gray-800 rounded-lg shadow-2xl h-full overflow-hidden flex flex-col">
+      {/* Header */}
+      <div className="bg-gray-900 border-b border-gray-700 p-6 flex-shrink-0">
+        <h1 className="text-4xl font-bold text-cyan-400">👤 Your Profile</h1>
+      </div>
 
-        <h1 className="text-4xl font-bold text-cyan-400 mb-8 mt-4">👤 Your Profile</h1>
-
+      {/* Content */}
+      <div className="flex-1 overflow-auto p-6">
         {error && (
           <div className="bg-red-900/50 border border-red-600 rounded-lg p-4 mb-6">
             <p className="text-red-400">{error}</p>
@@ -138,7 +144,7 @@ export default function ProfilePage() {
         )}
 
         {profileData && (
-          <div className="space-y-6">
+          <div className="space-y-6 max-w-5xl mx-auto">
             {/* Basic Info */}
             <div className="bg-gray-800 rounded-lg p-6 border-2 border-cyan-500/30">
               <h2 className="text-2xl font-bold text-cyan-400 mb-4">Commander Info</h2>

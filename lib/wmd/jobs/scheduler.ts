@@ -21,6 +21,7 @@
  * - Spy Mission Completer (30s) - Completes spy missions
  * - Vote Expiration Cleaner (60s) - Expires clan votes
  * - Defense Repair Completer (60s) - Completes battery repairs
+ * - Beer Base Respawner (60s) - Weekly Beer Base respawn (Sunday 4 AM)
  * 
  * Dependencies:
  * - Individual job modules
@@ -34,6 +35,7 @@ import { missileTracker } from './missileTracker';
 import { spyMissionCompleter } from './spyMissionCompleter';
 import { voteExpirationCleaner } from './voteExpirationCleaner';
 import { defenseRepairCompleter, defenseRepairCompleterJobInfo } from './defenseRepairCompleter';
+import { beerBaseRespawner, beerBaseRespawnerJobInfo } from './beerBaseRespawner';
 
 /**
  * Job execution statistics
@@ -101,6 +103,11 @@ const JOBS: JobConfig[] = [
     name: defenseRepairCompleterJobInfo.name,
     interval: defenseRepairCompleterJobInfo.interval,
     handler: defenseRepairCompleter,
+  },
+  {
+    name: beerBaseRespawnerJobInfo.name,
+    interval: beerBaseRespawnerJobInfo.interval,
+    handler: beerBaseRespawner,
   },
 ];
 

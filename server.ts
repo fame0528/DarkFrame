@@ -33,6 +33,7 @@ import type { Server as HTTPServer } from 'http';
 import type { NextServer } from 'next/dist/server/next';
 import { getSocketIOServer } from './lib/websocket/server';
 import { startWMDJobs, stopWMDJobs } from './lib/wmd/jobs/scheduler';
+import { startFlagBotJob, stopFlagBotJob } from './lib/jobs/flagBotManager';
 import { connectToDatabase } from './lib/mongodb';
 
 // Environment configuration
@@ -119,6 +120,25 @@ async function startServer(): Promise<void> {
       console.log('[Server] ⚠️  Server will run without WMD background jobs');
     }
 
+    // Initialize Flag Bot Background Job
+    try {
+      console.log('[Server] 🔄 Starting Flag Bot background job...');
+      const db = await connectToDatabase();
+      const flagJobResult = await startFlagBotJob(db);
+      
+      if (flagJobResult.success) {
+        console.log('[Server] ✅ Flag bot job started:', flagJobResult.message);
+      } else {
+        console.error('[Server] ⚠️  Flag bot job failed to start:', flagJobResult.message);
+      }
+    } catch (err) {
+      console.error('[Server] ⚠️  Flag bot job initialization failed:', {
+        error: err instanceof Error ? err.message : String(err),
+        stack: dev && err instanceof Error ? err.stack : undefined,
+      });
+      console.log('[Server] ⚠️  Server will run without Flag Bot background job');
+    }
+
     // Start HTTP server
     await new Promise<void>((resolve, reject) => {
       httpServer.listen(port, hostname, () => resolve());
@@ -147,6 +167,14 @@ async function startServer(): Promise<void> {
         console.log('[Server] ✅ WMD jobs stopped:', stopResult.message);
       } catch (err) {
         console.error('[Server] ⚠️  Error stopping WMD jobs:', err);
+      }
+      
+      // Stop Flag Bot background job
+      try {
+        const flagStopResult = stopFlagBotJob();
+        console.log('[Server] ✅ Flag bot job stopped:', flagStopResult.message);
+      } catch (err) {
+        console.error('[Server] ⚠️  Error stopping Flag bot job:', err);
       }
       
       httpServer.close(() => {

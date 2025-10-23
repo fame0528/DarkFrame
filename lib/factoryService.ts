@@ -30,7 +30,13 @@ export async function calculatePlayerPower(username: string): Promise<number> {
   // Add power from rank/level (10 power per rank)
   power += (player.rank || 1) * 10;
   
-  // Add power from units in inventory
+  // Add power from player's total military strength (PRIMARY POWER SOURCE)
+  // totalStrength comes from all units' STR stats combined
+  if (player.totalStrength) {
+    power += player.totalStrength;
+  }
+  
+  // Add power from units in inventory (secondary bonus)
   if (player.inventory && player.inventory.items) {
     const units = player.inventory.items.filter((item: any) => item.type === 'UNIT');
     power += units.length * 50; // Each unit adds 50 power

@@ -398,9 +398,37 @@ export async function recalculateAvailableTechs(
         },
       }
     );
-    
   } catch (error) {
     console.error('Error recalculating available techs:', error);
+  }
+}
+
+/**
+ * Get available techs for a player with full tech objects
+ * @param db Database instance
+ * @param playerId Player ID
+ * @returns Array of available research techs
+ */
+export async function getAvailableTechs(
+  db: Db,
+  playerId: string
+): Promise<ResearchTech[]> {
+  try {
+    const playerResearch = await getPlayerResearch(db, playerId);
+    if (!playerResearch) {
+      return [];
+    }
+    
+    // Get full tech objects for available techs
+    const availableTechs = ALL_RESEARCH_TECHS.filter(tech => 
+      playerResearch.availableTechs.includes(tech.techId) &&
+      !playerResearch.completedTechs.includes(tech.techId)
+    );
+    
+    return availableTechs;
+  } catch (error) {
+    console.error('Error getting available techs:', error);
+    return [];
   }
 }
 

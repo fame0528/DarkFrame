@@ -67,8 +67,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // TODO: Add admin role check
-    // For now, any authenticated user can trigger (should restrict to admins)
+    // Verify admin role
+    if (user.isAdmin !== true) {
+      return NextResponse.json(
+        { success: false, message: 'Admin access required' },
+        { status: 403 }
+      );
+    }
 
     const result = await manualBeerBaseRespawn();
 
@@ -110,7 +115,13 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    // TODO: Add admin role check
+    // Verify admin role
+    if (user.isAdmin !== true) {
+      return NextResponse.json(
+        { success: false, message: 'Admin access required' },
+        { status: 403 }
+      );
+    }
 
     const body = await request.json();
     const updates: Partial<BeerBaseConfig> = {};

@@ -60,6 +60,14 @@ export interface FlagBearer {
   
   /** Player's max HP */
   maxHP?: number;
+  
+  /** Particle trail tiles (8-minute lingering effect) */
+  trail?: Array<{
+    x: number;
+    y: number;
+    timestamp: Date;
+    expiresAt: Date;
+  }>;
 }
 
 /**

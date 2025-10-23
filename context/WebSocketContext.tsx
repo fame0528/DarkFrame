@@ -129,9 +129,19 @@ export function WebSocketProvider({
     newSocket.on('connect_error', (err) => {
       const isAuthError = err.message.includes('authentication') || err.message.includes('token');
       
+      // For auth errors on initial connection (attempt 0), this is likely a timing issue
+      // The server now has retry logic (3 attempts with backoff), so we should retry a few times
+      // to give the session cookie time to be established
+      const isInitialConnection = reconnectAttemptsRef.current === 0;
+      const shouldRetryAuthError = isAuthError && isInitialConnection && reconnectAttemptsRef.current < 3;
+      
       // Use warn for auth errors (expected when not logged in), error for others
       if (isAuthError) {
-        console.warn('[WebSocket] Authentication required:', err.message);
+        if (shouldRetryAuthError) {
+          console.warn('[WebSocket] Initial auth error (timing issue), will retry:', err.message);
+        } else {
+          console.warn('[WebSocket] Authentication failed after retries:', err.message);
+        }
       } else {
         console.error('[WebSocket] Connection error:', err.message);
       }
@@ -139,13 +149,13 @@ export function WebSocketProvider({
       setConnectionState('error');
       setError(err.message);
 
-      // Don't retry authentication errors (user needs to log in)
-      if (isAuthError) {
+      // Don't retry authentication errors UNLESS it's an initial connection timing issue
+      if (isAuthError && !shouldRetryAuthError) {
         console.warn('[WebSocket] Skipping reconnection attempts - authentication required');
         return;
       }
 
-      // Attempt reconnection with exponential backoff for other errors
+      // Attempt reconnection with exponential backoff
       if (reconnectAttemptsRef.current < maxReconnectAttempts) {
         const delay = getReconnectDelay();
         console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current + 1}/${maxReconnectAttempts})`);

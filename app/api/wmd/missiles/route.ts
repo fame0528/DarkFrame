@@ -29,7 +29,10 @@ import { wmdHandlers } from '@/lib/websocket/handlers';
 
 /**
  * GET /api/wmd/missiles
- * Fetch player's missiles
+ * Fetch player's missiles or specific missile details
+ * 
+ * Query params:
+ * - missileId: string (optional) - Get specific missile details
  */
 export async function GET(req: NextRequest) {
   try {
@@ -40,6 +43,35 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     
+    const { searchParams } = new URL(req.url);
+    const missileId = searchParams.get('missileId');
+    
+    // Get specific missile details
+    if (missileId) {
+      const missile = await db.collection('wmd_missiles').findOne({ missileId });
+      
+      if (!missile) {
+        return NextResponse.json(
+          { error: 'Missile not found' },
+          { status: 404 }
+        );
+      }
+      
+      // Verify ownership
+      if (missile.ownerId !== auth.playerId) {
+        return NextResponse.json(
+          { error: 'Unauthorized - not your missile' },
+          { status: 403 }
+        );
+      }
+      
+      return NextResponse.json({
+        success: true,
+        missile,
+      });
+    }
+    
+    // Get all player missiles
     const missiles = await getPlayerMissiles(db, auth.playerId);
     
     return NextResponse.json({
