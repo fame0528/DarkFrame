@@ -1,84 +1,70 @@
 /**
- * @fileoverview Clan Territory Claim API Route
- * @module app/api/clan/territory/claim/route
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/territory/claim/route.ts
+ * @created 2025-10-18
+ * @updated 2025-01-23 (FID-20251023-001: Auth deduplication + JSDoc)
  * 
  * OVERVIEW:
  * POST endpoint for claiming territory tiles for a clan. Validates adjacency requirements,
  * resource costs, territory limits, and permissions. Integrates with territory service for
  * claiming logic and cost calculation with perk-based reductions.
  * 
- * Endpoint: POST /api/clan/territory/claim
- * Body: { tileX: number, tileY: number }
+ * ROUTES:
+ * - POST /api/clan/territory/claim - Claim territory tile for clan
  * 
- * Business Rules:
+ * AUTHENTICATION:
+ * - requireClanMembership() - Must be clan member
+ * - Permission check in service layer (Officer, Co-Leader, Leader only)
+ * 
+ * BUSINESS RULES:
  * - First territory can be claimed anywhere
  * - Subsequent territories must be adjacent to existing clan territory (±1 x OR ±1 y)
  * - Cost: 500 Metal + 500 Energy (reduced by territory_cost perks)
  * - Max 100 territories per clan (configurable)
  * - Permissions: Officer, Co-Leader, or Leader only
  * - Cannot claim tiles already owned by any clan (including own clan)
- * 
- * Response:
- * - Success: { success: true, territory, cost, defenseBonus, message }
- * - Error: Specific validation error messages
- * 
- * Dependencies:
- * - JWT authentication (cookie-based)
- * - Territory service for claiming logic
- * - MongoDB for player and clan data
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import clientPromise from '@/lib/mongodb';
+import { getClientAndDatabase } from '@/lib/mongodb';
+import { requireClanMembership } from '@/lib/authMiddleware';
 import { claimTerritory } from '@/lib/territoryService';
-
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'your-secret-key-min-32-characters-long'
-);
 
 /**
  * POST /api/clan/territory/claim
- * 
  * Claim a territory tile for the player's clan
  * 
- * Request Body:
- * - tileX: number - X coordinate of tile to claim
- * - tileY: number - Y coordinate of tile to claim
+ * @param request - NextRequest with auth cookie and body data
+ * @returns NextResponse with claim result or error
  * 
- * Response:
- * - 200: { success: true, territory, cost, defenseBonus, message }
- * - 400: Validation errors (not in clan, invalid coords, already claimed, not adjacent, limit reached, insufficient resources)
- * - 401: Authentication required
- * - 403: Insufficient permissions (not Officer/Co-Leader/Leader)
- * - 404: Player not found
- * - 500: Server error
+ * @example
+ * POST /api/clan/territory/claim
+ * Body: { tileX: 5, tileY: 10 }
+ * Response: {
+ *   success: true,
+ *   territory: { tileX: 5, tileY: 10, clanId: "...", claimedAt: "..." },
+ *   cost: { metal: 450, energy: 450 },
+ *   defenseBonus: 2,
+ *   message: "Successfully claimed territory at (5, 10)"
+ * }
  * 
- * @param request - Next.js request object
- * @returns JSON response with claim result
+ * @throws {400} Invalid coords, already claimed, not adjacent, limit reached, or insufficient resources
+ * @throws {401} Not authenticated
+ * @throws {403} Insufficient permissions (not Officer/Co-Leader/Leader)
+ * @throws {404} Player not found
+ * @throws {500} Server error
  */
 export async function POST(request: NextRequest) {
   try {
-    // Authenticate user
-    const token = request.cookies.get('token')?.value;
+    const { db } = await getClientAndDatabase();
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    
+    const { auth, clanId } = result;
 
-    if (!token) {
-      return NextResponse.json(
-        { success: false, message: 'Authentication required' },
-        { status: 401 }
-      );
-    }
-
-    const verified = await jwtVerify(token, JWT_SECRET);
-    const username = verified.payload.username as string;
-
-    // Parse request body
+    // Parse and validate request body
     const body = await request.json();
     const { tileX, tileY } = body;
 
-    // Validate input
     if (typeof tileX !== 'number' || typeof tileY !== 'number') {
       return NextResponse.json(
         { success: false, message: 'Invalid coordinates. tileX and tileY must be numbers.' },
@@ -93,48 +79,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get player from database
-    const client = await clientPromise;
-    const db = client.db(process.env.MONGODB_DB || 'darkframe');
-    const playersCollection = db.collection('players');
-
-    const player = await playersCollection.findOne({ username });
-
-    if (!player) {
-      return NextResponse.json(
-        { success: false, message: 'Player not found' },
-        { status: 404 }
-      );
-    }
-
-    // Check if player is in a clan
-    if (!player.clanId) {
-      return NextResponse.json(
-        { success: false, message: 'You must be in a clan to claim territory' },
-        { status: 400 }
-      );
-    }
-
-    // Claim territory via service
-    const result = await claimTerritory(
-      player.clanId,
-      username, // playerId is username
+    // Claim territory via service (handles permissions, adjacency, costs)
+    const claimResult = await claimTerritory(
+      clanId,
+      auth.username,
       tileX,
       tileY
     );
 
     return NextResponse.json({
       success: true,
-      territory: result.territory,
-      cost: result.cost,
-      defenseBonus: result.defenseBonus,
+      territory: claimResult.territory,
+      cost: claimResult.cost,
+      defenseBonus: claimResult.defenseBonus,
       message: `Successfully claimed territory at (${tileX}, ${tileY})`,
     });
 
   } catch (error: any) {
     console.error('Error claiming territory:', error);
 
-    // Handle specific error messages from service
+    // Permission errors
     if (error.message.includes('permission') || error.message.includes('Officer')) {
       return NextResponse.json(
         { success: false, message: error.message },
@@ -142,6 +106,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Business rule violations
     if (
       error.message.includes('already claimed') ||
       error.message.includes('adjacent') ||
@@ -154,6 +119,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Not found errors
     if (error.message.includes('not found')) {
       return NextResponse.json(
         { success: false, message: error.message },

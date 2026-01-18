@@ -29,6 +29,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { formatNumberAbbreviated } from '@/utils/formatting';
 
 interface ClanXPProgressProps {
   currentXP: number;
@@ -96,20 +97,13 @@ export default function ClanXPProgress({
     previousXPRef.current = currentXP;
   }, [currentXP, showAnimations]);
 
-  // Format numbers
-  const formatNumber = (num: number): string => {
-    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
-    return num.toString();
-  };
-
   return (
     <div className="relative">
       {/* Progress Bar */}
       <div className="space-y-1">
         <div className="flex justify-between text-sm">
           <span className="text-gray-400">
-            {formatNumber(currentXP)} / {formatNumber(totalXP)} XP
+            {formatNumberAbbreviated(currentXP)} / {formatNumberAbbreviated(totalXP)} XP
           </span>
           <span className="text-cyan-400 font-bold">{progress.toFixed(1)}%</span>
         </div>
@@ -139,7 +133,7 @@ export default function ClanXPProgress({
           key={gain.id}
           className="absolute top-0 right-0 text-green-400 font-bold text-lg animate-float-up pointer-events-none"
         >
-          +{formatNumber(gain.amount)} XP
+          +{formatNumberAbbreviated(gain.amount)} XP
         </div>
       ))}
 
@@ -245,3 +239,4 @@ export default function ClanXPProgress({
     </div>
   );
 }
+

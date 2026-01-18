@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { useWebSocketContext } from '@/context/WebSocketContext';
+import { useGameContext } from '@/context/GameContext';
 import { showSuccess, showError, showInfo } from '@/lib/toastService';
 
 interface Tech {
@@ -61,6 +62,7 @@ export default function WMDResearchPanel() {
   const [loading, setLoading] = useState(true);
   const [selectedTrack, setSelectedTrack] = useState<'MISSILE' | 'DEFENSE' | 'INTELLIGENCE' | 'ALL'>('ALL');
   const { socket, isConnected } = useWebSocketContext();
+  const { player } = useGameContext(); // Get player data from context
 
   useEffect(() => {
     fetchResearchData();
@@ -209,7 +211,7 @@ export default function WMDResearchPanel() {
         </div>
         <div className="text-right">
           <div className="text-3xl font-bold text-green-400">
-            {research?.researchPoints?.toLocaleString() || 0} RP
+            {player?.researchPoints?.toLocaleString() || 0} RP
           </div>
           {research && research.clanResearchBonus > 0 && (
             <Badge className="bg-blue-600 mt-1">

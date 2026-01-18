@@ -29,7 +29,8 @@
 
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
+import { formatDateTime } from '@/utils/formatting';
 
 /**
  * Battle log data structure
@@ -218,21 +219,7 @@ export default function BattleLogsModal({ onClose }: BattleLogsModalProps) {
   };
 
   /**
-   * Format date and time
-   */
-  const formatDateTime = (isoString: string): string => {
-    const date = new Date(isoString);
-    return date.toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
-
-  /**
-   * Render loading state
+   * Get outcome color
    */
   if (loading) {
     return (

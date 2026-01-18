@@ -24,9 +24,22 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createValidationErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+import { SwitchSpecializationSchema } from '@/lib/validation/schemas';
+import { ZodError } from 'zod';
 import { verifyAuth } from '@/lib/authMiddleware';
 import { respecSpecialization, canRespec, SpecializationDoctrine, SPECIALIZATION_CONFIG, RESPEC_CONFIG } from '@/lib/specializationService';
-import { logger } from '@/lib/logger';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * POST /api/specialization/switch
@@ -36,73 +49,40 @@ import { logger } from '@/lib/logger';
  * @body newDoctrine - New specialization doctrine ('offensive', 'defensive', or 'tactical')
  * @returns Respec status and updated specialization
  */
-export async function POST(req: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (req: NextRequest) => {
+  const log = createRouteLogger('SpecializationSwitchAPI');
+  const endTimer = log.time('specialization-switch');
+  
   try {
     // Verify authentication
     const user = await verifyAuth();
     if (!user || !user.username) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized. Please log in.' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     const username = user.username;
 
-    // Parse request body
-    let body;
-    try {
-      body = await req.json();
-    } catch (error) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid request body' },
-        { status: 400 }
-      );
-    }
-
-    const { newDoctrine } = body;
-
-    // Validate doctrine parameter
-    if (!newDoctrine || typeof newDoctrine !== 'string') {
-      return NextResponse.json(
-        { success: false, error: 'New doctrine is required' },
-        { status: 400 }
-      );
-    }
+    // Validate request
+    const validated = SwitchSpecializationSchema.parse(await req.json());
 
     // Normalize doctrine to enum value
-    const normalizedDoctrine = newDoctrine.toLowerCase() as SpecializationDoctrine;
-
-    // Validate doctrine is a valid choice
-    const validDoctrines = [
-      SpecializationDoctrine.Offensive,
-      SpecializationDoctrine.Defensive,
-      SpecializationDoctrine.Tactical
-    ];
-
-    if (!validDoctrines.includes(normalizedDoctrine)) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Invalid doctrine. Must be one of: ${validDoctrines.join(', ')}`
-        },
-        { status: 400 }
-      );
-    }
+    const normalizedDoctrine = validated.newDoctrine.toLowerCase() as SpecializationDoctrine;
 
     // Attempt to respec specialization
     const result = await respecSpecialization(username, normalizedDoctrine);
 
     if (!result.success) {
-      return NextResponse.json(
-        { success: false, error: result.message },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: result.message,
+        context: { doctrine: normalizedDoctrine },
+      });
     }
 
     const config = SPECIALIZATION_CONFIG[normalizedDoctrine as keyof typeof SPECIALIZATION_CONFIG];
 
-    logger.success('Specialization respec completed', {
+    log.info('Specialization respec completed', {
       username,
       newDoctrine: normalizedDoctrine,
       rpSpent: RESPEC_CONFIG.rpCost,
@@ -143,16 +123,15 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (error) {
-    logger.error('Error in specialization switch endpoint:', { error });
-    return NextResponse.json(
-      {
-        success: false,
-        error: 'An error occurred while switching specialization'
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Error in specialization switch endpoint', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * GET /api/specialization/switch
@@ -161,15 +140,17 @@ export async function POST(req: NextRequest) {
  * 
  * @returns Eligibility info with costs and cooldown
  */
-export async function GET(req: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (req: NextRequest) => {
+  const log = createRouteLogger('SpecializationSwitchAPI');
+  const endTimer = log.time('specialization-respec-eligibility');
+  
   try {
     // Verify authentication
     const user = await verifyAuth();
     if (!user || !user.username) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized. Please log in.' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     const username = user.username;
@@ -209,13 +190,9 @@ export async function GET(req: NextRequest) {
     });
 
   } catch (error) {
-    logger.error('Error in specialization respec eligibility check:', { error });
-    return NextResponse.json(
-      {
-        success: false,
-        error: 'An error occurred while checking respec eligibility'
-      },
-      { status: 500 }
-    );
+    log.error('Error in specialization respec eligibility check', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

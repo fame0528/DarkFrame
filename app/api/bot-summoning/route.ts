@@ -21,68 +21,74 @@ import {
   summonBots,
   getSummoningStatus,
 } from '@/lib/botSummoningService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET - Get summoning status
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('bot-summoning-get');
+  const endTimer = log.time('bot-summoning-get');
+
   try {
     const tokenPayload = await getAuthenticatedUser();
 
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
 
     const playersCollection = await getCollection<Player>('players');
     const player = await playersCollection.findOne({ username: tokenPayload.username });
 
     if (!player || !player._id) {
-      return NextResponse.json(
-        { error: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.RESOURCE_NOT_FOUND, 'Player not found');
     }
 
     const status = await getSummoningStatus(player._id);
+
+    log.info('Bot summoning status retrieved', { playerId: player._id.toString() });
 
     return NextResponse.json({
       success: true,
       ...status,
     });
   } catch (error) {
-    console.error('Error getting summoning status:', error);
-    return NextResponse.json(
-      { error: 'Failed to get summoning status' },
-      { status: 500 }
-    );
+    log.error('Error getting summoning status', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * POST - Summon bots
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('bot-summoning-post');
+  const endTimer = log.time('bot-summoning-post');
+
   try {
     const tokenPayload = await getAuthenticatedUser();
 
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
 
     const playersCollection = await getCollection<Player>('players');
     const player = await playersCollection.findOne({ username: tokenPayload.username });
 
     if (!player || !player._id) {
-      return NextResponse.json(
-        { error: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.RESOURCE_NOT_FOUND, 'Player not found');
     }
 
     const body = await request.json();
@@ -98,20 +104,14 @@ export async function POST(request: NextRequest) {
     ];
 
     if (!specialization || !validSpecializations.includes(specialization)) {
-      return NextResponse.json(
-        { error: 'Invalid specialization. Must be: Hoarder, Fortress, Raider, Balanced, or Ghost' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_INVALID_FORMAT, 'Invalid specialization. Must be: Hoarder, Fortress, Raider, Balanced, or Ghost');
     }
 
     // Get player position
     const playerPosition = player.currentPosition || player.base;
 
     if (!playerPosition) {
-      return NextResponse.json(
-        { error: 'Player position not found' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'Player position not found');
     }
 
     // Summon bots
@@ -122,11 +122,15 @@ export async function POST(request: NextRequest) {
     );
 
     if (!result.success) {
-      return NextResponse.json(
-        { error: result.message },
-        { status: 400 }
-      );
+      log.warn('Bot summoning failed', { reason: result.message, specialization });
+      return NextResponse.json({ error: result.message }, { status: 400 });
     }
+
+    log.info('Bots summoned', { 
+      playerId: player._id.toString(),
+      specialization,
+      botCount: result.bots?.length || 0
+    });
 
     return NextResponse.json({
       success: true,
@@ -134,13 +138,12 @@ export async function POST(request: NextRequest) {
       bots: result.bots,
     });
   } catch (error) {
-    console.error('Error summoning bots:', error);
-    return NextResponse.json(
-      { error: 'Failed to summon bots' },
-      { status: 500 }
-    );
+    log.error('Error summoning bots', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * IMPLEMENTATION NOTES:

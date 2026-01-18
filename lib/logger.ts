@@ -93,7 +93,17 @@ export const logger = {
    * logger.error('Failed to fetch player data', error);
    */
   error: (message: string, error?: unknown): void => {
-    console.error(`❌ ${message}`, error !== undefined ? error : '');
+    if (error instanceof Error) {
+      console.error(`❌ ${message}`, {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      });
+    } else if (error !== undefined) {
+      console.error(`❌ ${message}`, error);
+    } else {
+      console.error(`❌ ${message}`);
+    }
   },
 
   /**

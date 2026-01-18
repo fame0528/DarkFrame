@@ -7,6 +7,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDiscoveryProgress } from '@/lib/discoveryService';
 import { logger } from '@/lib/logger';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET /api/discovery/status?username=player
@@ -30,44 +41,37 @@ import { logger } from '@/lib/logger';
  *   }
  * }
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('discovery-status');
+  const endTimer = log.time('discovery-status');
+  
   try {
     const searchParams = request.nextUrl.searchParams;
     const username = searchParams.get('username');
 
     if (!username) {
-      return NextResponse.json(
-        { success: false, error: 'Username is required' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'Username parameter is required');
     }
 
     const progress = await getDiscoveryProgress(username);
 
     if (!progress) {
-      return NextResponse.json(
-        { success: false, error: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.RESOURCE_NOT_FOUND, 'Player not found');
     }
 
+    log.info('Discovery status retrieved', { username, totalDiscovered: progress.totalDiscovered });
     return NextResponse.json({
       success: true,
       data: progress
     });
 
   } catch (error) {
-    logger.error('Error getting discovery status', error instanceof Error ? error : new Error(String(error)));
-    return NextResponse.json(
-      {
-        success: false,
-        error: 'Failed to get discovery status',
-        details: error instanceof Error ? error.message : 'Unknown error'
-      },
-      { status: 500 }
-    );
+    log.error('Failed to get discovery status', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

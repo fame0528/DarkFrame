@@ -19,9 +19,22 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createValidationErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+import { AwardMasteryXPSchema } from '@/lib/validation/schemas';
+import { ZodError } from 'zod';
 import { verifyAuth } from '@/lib/authMiddleware';
 import { getSpecializationStatus, awardMasteryXP, MASTERY_MILESTONES, MASTERY_XP_PER_LEVEL, SpecializationDoctrine } from '@/lib/specializationService';
-import { logger } from '@/lib/logger';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET /api/specialization/mastery
@@ -30,15 +43,17 @@ import { logger } from '@/lib/logger';
  * 
  * @returns Mastery level, XP, milestones, and next requirements
  */
-export async function GET(req: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (req: NextRequest) => {
+  const log = createRouteLogger('SpecializationMasteryAPI');
+  const endTimer = log.time('mastery-status');
+  
   try {
     // Verify authentication
     const user = await verifyAuth();
     if (!user || !user.username) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized. Please log in.' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     const username = user.username;
@@ -116,16 +131,12 @@ export async function GET(req: NextRequest) {
     });
 
   } catch (error) {
-    logger.error('Error in mastery status endpoint:', { error });
-    return NextResponse.json(
-      {
-        success: false,
-        error: 'An error occurred while retrieving mastery status'
-      },
-      { status: 500 }
-    );
+    log.error('Error in mastery status endpoint', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * POST /api/specialization/mastery
@@ -136,64 +147,40 @@ export async function GET(req: NextRequest) {
  * @body reason - Reason for XP gain
  * @returns Updated mastery status with level-up info
  */
-export async function POST(req: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (req: NextRequest) => {
+  const log = createRouteLogger('SpecializationMasteryAPI');
+  const endTimer = log.time('mastery-award-xp');
+  
   try {
     // Verify authentication
     const user = await verifyAuth();
     if (!user || !user.username) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized. Please log in.' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     const username = user.username;
 
-    // Parse request body
-    let body;
-    try {
-      body = await req.json();
-    } catch (error) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid request body' },
-        { status: 400 }
-      );
-    }
-
-    const { xpAmount, reason } = body;
-
-    // Validate inputs
-    if (typeof xpAmount !== 'number' || xpAmount <= 0) {
-      return NextResponse.json(
-        { success: false, error: 'Valid XP amount is required (positive number)' },
-        { status: 400 }
-      );
-    }
-
-    if (!reason || typeof reason !== 'string') {
-      return NextResponse.json(
-        { success: false, error: 'Reason for XP gain is required' },
-        { status: 400 }
-      );
-    }
+    // Validate request
+    const validated = AwardMasteryXPSchema.parse(await req.json());
 
     // Award mastery XP
-    const result = await awardMasteryXP(username, xpAmount, reason);
+    const result = await awardMasteryXP(username, validated.xpAmount, validated.reason);
 
     if (!result.success) {
-      return NextResponse.json(
-        { success: false, error: result.message },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: result.message,
+      });
     }
 
     // Log if leveled up
     if (result.leveledUp) {
-      logger.success('Mastery level-up', {
+      log.info('Mastery level-up', {
         username,
         newLevel: result.newMasteryLevel,
-        xpGained: xpAmount,
-        reason,
+        xpGained: validated.xpAmount,
+        reason: validated.reason,
         milestonesReached: result.milestonesReached
       });
     }
@@ -210,18 +197,17 @@ export async function POST(req: NextRequest) {
           ...MASTERY_MILESTONES[milestone as keyof typeof MASTERY_MILESTONES]
         }))
       },
-      xpGained: xpAmount,
-      reason
+      xpGained: validated.xpAmount,
+      reason: validated.reason
     });
 
   } catch (error) {
-    logger.error('Error in mastery XP award endpoint:', { error });
-    return NextResponse.json(
-      {
-        success: false,
-        error: 'An error occurred while awarding mastery XP'
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Error in mastery XP award endpoint', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

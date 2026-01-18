@@ -15,8 +15,21 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 
-export async function GET(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
+
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('clan-check-name');
+  const endTimer = log.time('check-name');
   try {
     // Extract name from query parameters
     const searchParams = request.nextUrl.searchParams;
@@ -47,19 +60,19 @@ export async function GET(request: NextRequest) {
       name: { $regex: new RegExp(`^${name}$`, 'i') }
     });
 
+    log.info('Clan name checked', { name, available: !existingClan });
     return NextResponse.json({
       available: !existingClan,
       name
     });
 
   } catch (error: any) {
-    console.error('Error checking clan name:', error);
-    return NextResponse.json(
-      { error: 'Failed to check clan name availability', available: false },
-      { status: 500 }
-    );
+    log.error('Failed to check clan name', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * IMPLEMENTATION NOTES:

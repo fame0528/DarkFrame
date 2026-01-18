@@ -68,6 +68,14 @@ const SPECIALIZATION_INFO = {
     description: 'Teleports randomly, unpredictable',
     color: 'text-purple-400',
   },
+  // Boss specialization exists in game but cannot be summoned by players.
+  // Included here for exhaustive typing to prevent TS index errors.
+  [BotSpecialization.Boss]: {
+    name: 'Boss',
+    icon: '👑',
+    description: 'Elite world boss. Cannot be summoned (admin/spawn only).',
+    color: 'text-amber-400',
+  },
 };
 
 export default function BotSummoningPanel() {
@@ -100,6 +108,11 @@ export default function BotSummoningPanel() {
   };
 
   const handleSummon = async () => {
+    // Prevent attempting to summon Boss specialization from UI
+    if (selectedSpec === BotSpecialization.Boss) {
+      setMessage({ type: 'error', text: 'Bosses are elite world spawns and cannot be summoned.' });
+      return;
+    }
     if (!confirm(`Summon 5 ${SPECIALIZATION_INFO[selectedSpec].name} bots at your location?`)) {
       return;
     }
@@ -214,6 +227,7 @@ export default function BotSummoningPanel() {
                     ? 'bg-purple-500/30 border-purple-500'
                     : 'bg-slate-700/30 border-slate-600/30 hover:border-purple-500/50'
                 }`}
+                disabled={spec === BotSpecialization.Boss}
               >
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-2xl">{info.icon}</span>

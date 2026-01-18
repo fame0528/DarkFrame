@@ -24,7 +24,9 @@
  */
 
 import { connectToDatabase } from './mongodb';
-import { createBot } from './botService';
+import { recordSpawnEvent } from './beerBaseAnalytics';
+import { createBotPlayer } from './botService';
+import { generatePredictiveDistribution, PredictiveDistribution } from './playerHistoryService';
 import { BotSpecialization, UnitType, PlayerUnit } from '@/types/game.types';
 
 // Map size constant
@@ -37,9 +39,73 @@ export interface BeerBaseConfig {
   spawnRateMin: number; // Minimum % of population (default 5)
   spawnRateMax: number; // Maximum % of population (default 10)
   resourceMultiplier: number; // Resource reward multiplier (default 3)
-  respawnDay: number; // Day of week (0=Sunday, default 0)
-  respawnHour: number; // Hour of day (default 4 AM)
+  respawnDay: number; // Day of week (0=Sunday, default 0) - LEGACY, kept for backward compatibility
+  respawnHour: number; // Hour of day (default 4 AM) - LEGACY, kept for backward compatibility
   enabled: boolean; // Master switch (default true)
+  
+  // Variety Settings (FID-20251025-001)
+  varietyEnabled?: boolean; // Enable variety enforcement (default true)
+  minWeakPercent?: number; // Min % of WEAK bases (default 15)
+  minMediumPercent?: number; // Min % of MEDIUM bases (default 20)
+  minStrongPercent?: number; // Min % of STRONG bases (default 15)
+  minElitePercent?: number; // Min % of ELITE bases (default 10)
+  maxSameTierPercent?: number; // Max % from single tier (default 60)
+  
+  // Dynamic Schedules (FID-20251025-003)
+  schedulesEnabled?: boolean; // Use dynamic schedules (default false for backward compat)
+  schedules?: RespawnSchedule[]; // Array of respawn schedules
+  
+  // Predictive Spawning (FID-20251025-002)
+  usePredictiveSpawning?: boolean; // Use predictive tier distribution based on projected player levels (default false)
+  predictiveWeeksAhead?: number; // Weeks to project ahead for predictions (default 2)
+}
+
+/**
+ * Respawn Schedule
+ * Defines when Beer Bases should respawn and what percentage to spawn
+ * 
+ * Example:
+ * {
+ *   id: 'schedule-1',
+ *   enabled: true,
+ *   dayOfWeek: 0, // Sunday
+ *   hour: 4, // 4 AM
+ *   spawnPercentage: 50, // Spawn 50% of total Beer Bases
+ *   timezone: 'America/New_York', // EST
+ *   name: 'Sunday Morning Spawn'
+ * }
+ */
+export interface RespawnSchedule {
+  id: string; // Unique schedule ID
+  enabled: boolean; // Active/inactive
+  dayOfWeek: number; // 0-6 (0=Sunday, 6=Saturday)
+  hour: number; // 0-23 (in specified timezone)
+  spawnPercentage: number; // % of total Beer Bases to spawn (1-100, can combine >100%)
+  timezone: string; // IANA timezone (e.g., 'America/New_York', 'UTC')
+  name?: string; // Optional friendly name
+  lastRun?: Date; // Last time this schedule triggered
+}
+
+/**
+ * Variety Configuration
+ * Ensures minimum variety across power tiers even with homogeneous player base
+ * 
+ * Example: If all players are Level 15 (Mid tier), pure player-based distribution
+ * would spawn 100% Mid Beer Bases. With variety enforcement:
+ * - 15% WEAK (easy targets)
+ * - 20% MEDIUM (appropriate challenges)
+ * - 40% STRONG (growth opportunities) 
+ * - 15% ELITE (aspirational content)
+ * - 10% ULTRA (prestige targets)
+ */
+export interface VarietyConfig {
+  enabled: boolean; // Enable variety enforcement (default: true)
+  minWeakPercent: number; // Min % of WEAK bases (default: 15%)
+  minMediumPercent: number; // Min % of MEDIUM bases (default: 20%)
+  minStrongPercent: number; // Min % of STRONG bases (default: 15%)
+  minElitePercent: number; // Min % of ELITE bases (default: 10%)
+  minUltraPercent: number; // Min % of ULTRA bases (default: 5%)
+  maxSameTierPercent: number; // Max % from single tier (default: 60%)
 }
 
 /**
@@ -49,14 +115,50 @@ export interface BeerBaseConfig {
  * - 5-10% spawn rate = 100-500 Beer Bases (realistic distribution)
  * - Provides varied hunting opportunities across all power tiers
  * - Ensures players always have targets without oversaturation
+ * 
+ * Variety Settings (FID-20251025-001):
+ * - Ensures minimum distribution across all tiers (prevent 100% single tier)
+ * - Defaults provide balanced variety while respecting player levels
+ * - Can be disabled to use pure player-based distribution
+ * 
+ * Dynamic Schedules (FID-20251025-003):
+ * - Backward compatible: Legacy respawnDay/respawnHour still work when schedulesEnabled=false
+ * - Modern: Multiple respawn times per week with flexible percentages
+ * - Default: Single Sunday 4 AM EST schedule spawning 100%
  */
 const DEFAULT_CONFIG: BeerBaseConfig = {
   spawnRateMin: 5,  // 5% minimum (100+ bases with 2000 bots)
   spawnRateMax: 10, // 10% maximum (500 bases with 5000 bots)
-  resourceMultiplier: 3,
-  respawnDay: 0, // Sunday
-  respawnHour: 4, // 4 AM
+  resourceMultiplier: 3, // 3x resource rewards
+  respawnDay: 0, // Sunday (LEGACY - kept for backward compatibility)
+  respawnHour: 4, // 4 AM (LEGACY - kept for backward compatibility)
   enabled: true,
+  
+  // Variety Settings
+  varietyEnabled: true,
+  minWeakPercent: 15,
+  minMediumPercent: 20,
+  minStrongPercent: 15,
+  minElitePercent: 10,
+  maxSameTierPercent: 60,
+  
+  // Dynamic Schedules
+  schedulesEnabled: false, // Use legacy single schedule by default
+  schedules: [
+    {
+      id: 'default-schedule',
+      enabled: true,
+      dayOfWeek: 0, // Sunday
+      hour: 4, // 4 AM
+      spawnPercentage: 100, // Spawn 100% of Beer Bases
+      timezone: 'America/New_York', // EST
+      name: 'Sunday Morning Spawn'
+    }
+  ],
+  
+  // Predictive Spawning (FID-20251025-002)
+  usePredictiveSpawning: false, // Use current player levels by default (not predictions)
+  predictiveWeeksAhead: 2, // Project 2 weeks ahead when enabled
 };
 
 /**
@@ -75,6 +177,22 @@ export async function getBeerBaseConfig(): Promise<BeerBaseConfig> {
         respawnDay: config.respawnDay ?? DEFAULT_CONFIG.respawnDay,
         respawnHour: config.respawnHour ?? DEFAULT_CONFIG.respawnHour,
         enabled: config.enabled ?? DEFAULT_CONFIG.enabled,
+        
+        // Variety settings (FID-20251025-001)
+        varietyEnabled: config.varietyEnabled ?? DEFAULT_CONFIG.varietyEnabled,
+        minWeakPercent: config.minWeakPercent ?? DEFAULT_CONFIG.minWeakPercent,
+        minMediumPercent: config.minMediumPercent ?? DEFAULT_CONFIG.minMediumPercent,
+        minStrongPercent: config.minStrongPercent ?? DEFAULT_CONFIG.minStrongPercent,
+        minElitePercent: config.minElitePercent ?? DEFAULT_CONFIG.minElitePercent,
+        maxSameTierPercent: config.maxSameTierPercent ?? DEFAULT_CONFIG.maxSameTierPercent,
+        
+        // Dynamic Schedules (FID-20251025-003)
+        schedulesEnabled: config.schedulesEnabled ?? DEFAULT_CONFIG.schedulesEnabled,
+        schedules: config.schedules ?? DEFAULT_CONFIG.schedules,
+        
+        // Predictive Spawning (FID-20251025-002)
+        usePredictiveSpawning: config.usePredictiveSpawning ?? DEFAULT_CONFIG.usePredictiveSpawning,
+        predictiveWeeksAhead: config.predictiveWeeksAhead ?? DEFAULT_CONFIG.predictiveWeeksAhead,
       };
     }
     
@@ -99,7 +217,120 @@ export async function updateBeerBaseConfig(config: Partial<BeerBaseConfig>): Pro
 }
 
 /**
+ * Get all respawn schedules
+ * Returns active schedules array or empty array if none configured
+ */
+export async function getSchedules(): Promise<RespawnSchedule[]> {
+  const config = await getBeerBaseConfig();
+  return config.schedules || [];
+}
+
+/**
+ * Add a new respawn schedule
+ * @param schedule - Schedule to add (id will be generated if not provided)
+ * @returns The added schedule with generated ID
+ */
+export async function addSchedule(schedule: Omit<RespawnSchedule, 'id'> & { id?: string }): Promise<RespawnSchedule> {
+  const db = await connectToDatabase();
+  const config = await getBeerBaseConfig();
+  
+  // Generate unique ID if not provided
+  const newSchedule: RespawnSchedule = {
+    ...schedule,
+    id: schedule.id || `schedule-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+  };
+  
+  // Add to schedules array
+  const updatedSchedules = [...(config.schedules || []), newSchedule];
+  
+  await db.collection('gameConfig').updateOne(
+    { type: 'beerBase' },
+    { 
+      $set: { 
+        schedules: updatedSchedules,
+        updatedAt: new Date() 
+      } 
+    },
+    { upsert: true }
+  );
+  
+  return newSchedule;
+}
+
+/**
+ * Update an existing respawn schedule
+ * @param id - Schedule ID to update
+ * @param updates - Fields to update
+ * @returns Updated schedule or null if not found
+ */
+export async function updateSchedule(
+  id: string, 
+  updates: Partial<Omit<RespawnSchedule, 'id'>>
+): Promise<RespawnSchedule | null> {
+  const db = await connectToDatabase();
+  const config = await getBeerBaseConfig();
+  
+  const schedules = config.schedules || [];
+  const index = schedules.findIndex(s => s.id === id);
+  
+  if (index === -1) {
+    return null; // Schedule not found
+  }
+  
+  // Update the schedule
+  const updatedSchedule = { ...schedules[index], ...updates };
+  schedules[index] = updatedSchedule;
+  
+  await db.collection('gameConfig').updateOne(
+    { type: 'beerBase' },
+    { 
+      $set: { 
+        schedules,
+        updatedAt: new Date() 
+      } 
+    }
+  );
+  
+  return updatedSchedule;
+}
+
+/**
+ * Delete a respawn schedule
+ * @param id - Schedule ID to delete
+ * @returns True if deleted, false if not found
+ */
+export async function deleteSchedule(id: string): Promise<boolean> {
+  const db = await connectToDatabase();
+  const config = await getBeerBaseConfig();
+  
+  const schedules = config.schedules || [];
+  const initialLength = schedules.length;
+  const filteredSchedules = schedules.filter(s => s.id !== id);
+  
+  if (filteredSchedules.length === initialLength) {
+    return false; // Schedule not found
+  }
+  
+  await db.collection('gameConfig').updateOne(
+    { type: 'beerBase' },
+    { 
+      $set: { 
+        schedules: filteredSchedules,
+        updatedAt: new Date() 
+      } 
+    }
+  );
+  
+  return true;
+}
+
+/**
  * Calculate target number of Beer Bases based on total bot population
+ * 
+ * FIXED 2025-10-25: Exclude Beer Bases from count to prevent infinite feedback loop
+ * - OLD BUG: Counted ALL bots including Beer Bases → infinite growth
+ * - NEW FIX: Only count regular bots (exclude isSpecialBase: true)
+ * - SAFETY CAPS: Respect botConfig.totalBotCap and absolute max of 1000
  */
 export async function getTargetBeerBaseCount(): Promise<number> {
   const db = await connectToDatabase();
@@ -109,16 +340,35 @@ export async function getTargetBeerBaseCount(): Promise<number> {
     return 0;
   }
   
-  // Get total bot count
-  const totalBots = await db.collection('players').countDocuments({ isBot: true });
+  // Get total REGULAR bot count (EXCLUDE Beer Bases to prevent infinite loop)
+  const regularBots = await db.collection('players').countDocuments({ 
+    isBot: true,
+    isSpecialBase: { $ne: true } // CRITICAL: Don't count Beer Bases in calculation
+  });
   
-  // Random percentage between min and max
-  const spawnRate = config.spawnRateMin + Math.random() * (config.spawnRateMax - config.spawnRateMin);
+  // Get bot system config for totalBotCap
+  const botConfig = await db.collection('botConfig').findOne({});
+  const totalBotCap = botConfig?.totalBotCap || 1000;
   
-  // Calculate target count
-  const targetCount = Math.floor(totalBots * (spawnRate / 100));
+  // Use average spawn rate (no need for random variance every check)
+  const spawnRate = (config.spawnRateMin + config.spawnRateMax) / 2;
   
-  return Math.max(1, targetCount); // At least 1 Beer Base if enabled
+  // Calculate target count based on REGULAR bots only
+  let targetCount = Math.floor(regularBots * (spawnRate / 100));
+  
+  // SAFETY CAP #1: Never exceed 10% of total bot cap
+  const maxAllowed = Math.floor(totalBotCap * 0.10);
+  targetCount = Math.min(targetCount, maxAllowed);
+  
+  // SAFETY CAP #2: Absolute maximum of 1000 Beer Bases
+  targetCount = Math.min(targetCount, 1000);
+  
+  // Return 0 if no regular bots exist yet (prevent spawning before bot population)
+  if (regularBots === 0) {
+    return 0;
+  }
+  
+  return Math.max(1, targetCount); // At least 1 Beer Base if enabled and bots exist
 }
 
 /**
@@ -153,6 +403,21 @@ enum PowerTier {
   Elite = 'ELITE',         // 2M-10M total power (endgame targets)
   Ultra = 'ULTRA',         // 10M-50M total power (veteran targets)
   Legendary = 'LEGENDARY'  // 50M-100M total power (ultimate challenges)
+}
+
+/**
+ * Convert PowerTier to numeric tier (0-5) for analytics
+ */
+function powerTierToNumber(tier: PowerTier): number {
+  switch (tier) {
+    case PowerTier.Weak: return 0;
+    case PowerTier.Mid: return 1;
+    case PowerTier.Strong: return 2;
+    case PowerTier.Elite: return 3;
+    case PowerTier.Ultra: return 4;
+    case PowerTier.Legendary: return 5;
+    default: return 0;
+  }
 }
 
 /**
@@ -396,8 +661,434 @@ function generateBeerBaseUnits(
 }
 
 /**
- * Select random power tier with weighted distribution
+ * Player level distribution for smart spawning
+ * Maps player levels to power tiers
+ */
+interface PlayerLevelDistribution {
+  weak: number;      // % of players level 1-10
+  mid: number;       // % of players level 11-20
+  strong: number;    // % of players level 21-30
+  elite: number;     // % of players level 31-40
+  ultra: number;     // % of players level 41-50
+  legendary: number; // % of players level 51+
+  totalPlayers: number;
+}
+
+/**
+ * Analyze active player level distribution
+ * Only counts players active in last 7 days
+ * Returns percentage distribution across power tiers
+ * 
+ * @returns Player level distribution by power tier
+ */
+async function analyzePlayerLevelDistribution(): Promise<PlayerLevelDistribution> {
+  const db = await connectToDatabase();
+  
+  // Get active players (logged in within last 7 days OR no lastLoginDate set)
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  
+  const activePlayers = await db.collection('players').find({
+    isBot: { $ne: true }, // Only real players (handles missing isBot field)
+    $or: [
+      { lastLoginDate: { $gte: sevenDaysAgo } }, // Logged in recently
+      { lastLoginDate: { $exists: false } }       // No login tracking yet (assume active)
+    ]
+  }).toArray();
+  
+  const totalPlayers = activePlayers.length;
+  
+  if (totalPlayers === 0) {
+    // No active players - return default distribution
+    return {
+      weak: 10,
+      mid: 30,
+      strong: 30,
+      elite: 20,
+      ultra: 8,
+      legendary: 2,
+      totalPlayers: 0
+    };
+  }
+  
+  // Count players in each level range
+  let weakCount = 0;
+  let midCount = 0;
+  let strongCount = 0;
+  let eliteCount = 0;
+  let ultraCount = 0;
+  let legendaryCount = 0;
+  
+  for (const player of activePlayers) {
+    const level = (player as any).level || 1;
+    
+    if (level <= 10) weakCount++;
+    else if (level <= 20) midCount++;
+    else if (level <= 30) strongCount++;
+    else if (level <= 40) eliteCount++;
+    else if (level <= 50) ultraCount++;
+    else legendaryCount++;
+  }
+  
+  // Convert to percentages
+  return {
+    weak: Math.round((weakCount / totalPlayers) * 100),
+    mid: Math.round((midCount / totalPlayers) * 100),
+    strong: Math.round((strongCount / totalPlayers) * 100),
+    elite: Math.round((eliteCount / totalPlayers) * 100),
+    ultra: Math.round((ultraCount / totalPlayers) * 100),
+    legendary: Math.round((legendaryCount / totalPlayers) * 100),
+    totalPlayers
+  };
+}
+
+/**
+ * Apply variety enforcement to power tier distribution
+ * Ensures minimum percentages across all tiers regardless of player distribution
+ * 
+ * Algorithm:
+ * 1. Calculate current tier percentages from distribution
+ * 2. Compare against configured minimums
+ * 3. Boost tiers below minimum to reach minimum
+ * 4. Reduce dominant tier if exceeds max same-tier percentage
+ * 5. Normalize to ensure total = 100%
+ * 
+ * Example:
+ * - Player-based: 100% Mid tier (homogeneous Level 15 players)
+ * - After variety: 15% WEAK, 25% MEDIUM, 40% STRONG, 15% ELITE, 5% ULTRA
+ * 
+ * @param tiers - Original tier distribution from player analysis
+ * @param config - Beer Base configuration with variety settings
+ * @returns Variety-enforced tier distribution
+ */
+function applyVarietyEnforcement(tiers: PowerTier[], config: BeerBaseConfig): PowerTier[] {
+  // If variety disabled, return original distribution
+  if (!config.varietyEnabled) {
+    return tiers;
+  }
+  
+  // Count current tier distribution
+  const tierCounts = {
+    [PowerTier.Weak]: tiers.filter(t => t === PowerTier.Weak).length,
+    [PowerTier.Mid]: tiers.filter(t => t === PowerTier.Mid).length,
+    [PowerTier.Strong]: tiers.filter(t => t === PowerTier.Strong).length,
+    [PowerTier.Elite]: tiers.filter(t => t === PowerTier.Elite).length,
+    [PowerTier.Ultra]: tiers.filter(t => t === PowerTier.Ultra).length,
+    [PowerTier.Legendary]: tiers.filter(t => t === PowerTier.Legendary).length,
+  };
+  
+  const total = tiers.length;
+  
+  // Calculate current percentages
+  const currentPercentages = {
+    [PowerTier.Weak]: (tierCounts[PowerTier.Weak] / total) * 100,
+    [PowerTier.Mid]: (tierCounts[PowerTier.Mid] / total) * 100,
+    [PowerTier.Strong]: (tierCounts[PowerTier.Strong] / total) * 100,
+    [PowerTier.Elite]: (tierCounts[PowerTier.Elite] / total) * 100,
+    [PowerTier.Ultra]: (tierCounts[PowerTier.Ultra] / total) * 100,
+    [PowerTier.Legendary]: (tierCounts[PowerTier.Legendary] / total) * 100,
+  };
+  
+  // Get configured minimums (with fallback to defaults)
+  const minWeakPercent = config.minWeakPercent ?? 15;
+  const minMediumPercent = config.minMediumPercent ?? 20;
+  const minStrongPercent = config.minStrongPercent ?? 15;
+  const minElitePercent = config.minElitePercent ?? 10;
+  const maxSameTierPercent = config.maxSameTierPercent ?? 60;
+  
+  // Build target percentages with minimums enforced
+  const targetPercentages = {
+    [PowerTier.Weak]: Math.max(currentPercentages[PowerTier.Weak], minWeakPercent),
+    [PowerTier.Mid]: Math.max(currentPercentages[PowerTier.Mid], minMediumPercent),
+    [PowerTier.Strong]: Math.max(currentPercentages[PowerTier.Strong], minStrongPercent),
+    [PowerTier.Elite]: Math.max(currentPercentages[PowerTier.Elite], minElitePercent),
+    [PowerTier.Ultra]: currentPercentages[PowerTier.Ultra], // No minimum for ULTRA/LEGENDARY
+    [PowerTier.Legendary]: currentPercentages[PowerTier.Legendary],
+  };
+  
+  // Check if any tier exceeds max same-tier percentage
+  const maxTier = (Object.entries(targetPercentages) as [PowerTier, number][]).reduce((max, [tier, pct]) => 
+    pct > max[1] ? [tier, pct] : max
+  );
+  
+  if (maxTier[1] > maxSameTierPercent) {
+    // Cap the dominant tier
+    targetPercentages[maxTier[0]] = maxSameTierPercent;
+  }
+  
+  // Normalize to ensure total = 100%
+  const sumPercentages = Object.values(targetPercentages).reduce((sum, pct) => sum + pct, 0);
+  
+  if (sumPercentages !== 100) {
+    // Distribute difference proportionally
+    const multiplier = 100 / sumPercentages;
+    Object.keys(targetPercentages).forEach(tier => {
+      targetPercentages[tier as PowerTier] *= multiplier;
+    });
+  }
+  
+  // Build new tier array based on target percentages
+  const newTiers: PowerTier[] = [];
+  const targetTotal = 100; // Work with 100 items for easy percentage conversion
+  
+  Object.entries(targetPercentages).forEach(([tier, percentage]) => {
+    const count = Math.round((percentage / 100) * targetTotal);
+    for (let i = 0; i < count; i++) {
+      newTiers.push(tier as PowerTier);
+    }
+  });
+  
+  // Ensure we have at least targetTotal items (handle rounding errors)
+  while (newTiers.length < targetTotal) {
+    // Add from tier with highest target percentage
+    const maxTier = (Object.entries(targetPercentages) as [PowerTier, number][]).reduce((max, [tier, pct]) => 
+      pct > max[1] ? [tier, pct] : max
+    );
+    newTiers.push(maxTier[0]);
+  }
+  
+  // Trim if we went over (rounding up)
+  while (newTiers.length > targetTotal) {
+    newTiers.pop();
+  }
+  
+  return newTiers;
+}
+
+/**
+ * Generate smart power tier distribution based on player population
+ * Uses "spread" approach: distributes spawns across adjacent tiers for variety
+ * 
+ * Enhanced with Variety Enforcement (FID-20251025-001):
+ * - Ensures minimum percentages across all tiers
+ * - Prevents homogeneous spawns when player base is uniform
+ * - Can be toggled on/off via config.varietyEnabled
+ * 
+ * Example: If 80% of players are level 21-30 (Strong tier):
+ * - 40% Strong Beer Bases (same tier)
+ * - 30% Elite Beer Bases (one tier up - challenge)
+ * - 10% Mid Beer Bases (one tier down - easier targets)
+ * - 20% Ultra Beer Bases (two tiers up - rare challenge)
+ * 
+ * @param distribution - Player level distribution from analysis
+ * @param config - Beer Base configuration (includes variety settings)
+ * @returns Weighted array of power tiers for random selection
+ */
+function generateSmartPowerTierDistribution(
+  distribution: PlayerLevelDistribution,
+  config: BeerBaseConfig
+): PowerTier[] {
+  const tiers: PowerTier[] = [];
+  
+  // Helper to add tiers with spread distribution
+  const addTierWithSpread = (
+    primaryTier: PowerTier,
+    lowerTier: PowerTier | null,
+    upperTier: PowerTier | null,
+    upperTier2: PowerTier | null,
+    percentage: number
+  ) => {
+    if (percentage === 0) return;
+    
+    // Spread approach: 40% same tier, 30% upper tier, 10% lower tier, 20% upper tier 2
+    const count = Math.round(percentage);
+    
+    // 40% primary tier (same as player range)
+    const primaryCount = Math.round(count * 0.40);
+    for (let i = 0; i < primaryCount; i++) {
+      tiers.push(primaryTier);
+    }
+    
+    // 30% upper tier (challenge)
+    if (upperTier) {
+      const upperCount = Math.round(count * 0.30);
+      for (let i = 0; i < upperCount; i++) {
+        tiers.push(upperTier);
+      }
+    }
+    
+    // 10% lower tier (easier targets)
+    if (lowerTier) {
+      const lowerCount = Math.round(count * 0.10);
+      for (let i = 0; i < lowerCount; i++) {
+        tiers.push(lowerTier);
+      }
+    }
+    
+    // 20% upper tier 2 (rare challenge)
+    if (upperTier2) {
+      const upper2Count = Math.round(count * 0.20);
+      for (let i = 0; i < upper2Count; i++) {
+        tiers.push(upperTier2);
+      }
+    }
+  };
+  
+  // Build distribution based on player levels
+  addTierWithSpread(PowerTier.Weak, null, PowerTier.Mid, PowerTier.Strong, distribution.weak);
+  addTierWithSpread(PowerTier.Mid, PowerTier.Weak, PowerTier.Strong, PowerTier.Elite, distribution.mid);
+  addTierWithSpread(PowerTier.Strong, PowerTier.Mid, PowerTier.Elite, PowerTier.Ultra, distribution.strong);
+  addTierWithSpread(PowerTier.Elite, PowerTier.Strong, PowerTier.Ultra, PowerTier.Legendary, distribution.elite);
+  addTierWithSpread(PowerTier.Ultra, PowerTier.Elite, PowerTier.Legendary, null, distribution.ultra);
+  addTierWithSpread(PowerTier.Legendary, PowerTier.Ultra, null, null, distribution.legendary);
+  
+  // Ensure we have at least some tiers (fallback)
+  if (tiers.length === 0) {
+    // Default distribution if no players
+    return [
+      PowerTier.Weak,
+      PowerTier.Mid, PowerTier.Mid, PowerTier.Mid,
+      PowerTier.Strong, PowerTier.Strong, PowerTier.Strong,
+      PowerTier.Elite, PowerTier.Elite,
+      PowerTier.Ultra,
+    ];
+  }
+  
+  // Apply variety enforcement (FID-20251025-001)
+  return applyVarietyEnforcement(tiers, config);
+}
+
+/**
+ * Cached player distribution (refreshed every 15 minutes)
+ */
+let cachedDistribution: PlayerLevelDistribution | null = null;
+let cachedSmartTiers: PowerTier[] | null = null;
+let cachedPredictiveTiers: PowerTier[] | null = null; // Cache for predictive distribution
+let lastDistributionUpdate: Date | null = null;
+
+/**
+ * Convert predictive distribution to PowerTier array
+ * Maps predictive tier percentages (0-5) to PowerTier enum
+ * 
+ * @param predictiveDistribution - Predictive distribution from playerHistoryService
+ * @returns Array of power tiers for weighted random selection
+ */
+function convertPredictiveToTiers(predictiveDistribution: PredictiveDistribution): PowerTier[] {
+  const tiers: PowerTier[] = [];
+  const percentages = predictiveDistribution.tierDistribution;
+  
+  // Map numeric tiers (0-5) to PowerTier enum
+  const tierMap = [
+    PowerTier.Weak,      // tier 0
+    PowerTier.Mid,       // tier 1
+    PowerTier.Strong,    // tier 2
+    PowerTier.Elite,     // tier 3
+    PowerTier.Ultra,     // tier 4
+    PowerTier.Legendary, // tier 5
+  ];
+  
+  // Build weighted array (100 items total for easy percentage mapping)
+  percentages.forEach((percentage, index) => {
+    const count = Math.round(percentage); // percentage is already 0-100
+    for (let i = 0; i < count; i++) {
+      tiers.push(tierMap[index]);
+    }
+  });
+  
+  // Ensure we have at least 100 items (handle rounding errors)
+  while (tiers.length < 100) {
+    // Add from highest percentage tier
+    const maxIndex = percentages.indexOf(Math.max(...percentages));
+    tiers.push(tierMap[maxIndex]);
+  }
+  
+  return tiers;
+}
+
+/**
+ * Select smart power tier based on active player levels
+ * Analyzes player population and spawns appropriate Beer Bases
+ * 
+ * Enhanced with Predictive Spawning (FID-20251025-002):
+ * - Can use projected future player levels (2 weeks ahead) when enabled
+ * - Falls back to current player levels if predictive disabled or fails
+ * - Graceful error handling ensures spawning never breaks
+ * 
+ * Cache refreshed every 15 minutes to avoid constant DB queries
+ * 
+ * @returns Power tier selected via weighted random from smart distribution
+ */
+async function selectSmartPowerTier(): Promise<PowerTier> {
+  const now = new Date();
+  const fifteenMinutes = 15 * 60 * 1000;
+  
+  // Get config for variety enforcement and predictive spawning
+  const config = await getBeerBaseConfig();
+  
+  // Refresh cache if older than 15 minutes or doesn't exist
+  if (
+    !lastDistributionUpdate ||
+    (!cachedDistribution && !config.usePredictiveSpawning) ||
+    (!cachedPredictiveTiers && config.usePredictiveSpawning) ||
+    (now.getTime() - lastDistributionUpdate.getTime()) > fifteenMinutes
+  ) {
+    console.log('[BeerBase] 🔄 Refreshing distribution for smart spawning...');
+    
+    // Use predictive distribution if enabled
+    if (config.usePredictiveSpawning) {
+      try {
+        const weeksAhead = config.predictiveWeeksAhead ?? 2;
+        const predictiveDistribution = await generatePredictiveDistribution(weeksAhead);
+        cachedPredictiveTiers = convertPredictiveToTiers(predictiveDistribution);
+        lastDistributionUpdate = now;
+        
+        console.log('[BeerBase] 🔮 Predictive distribution updated:', {
+          weeksAhead,
+          totalProjectedPlayers: predictiveDistribution.projectedPlayerLevels.length,
+          tierDistribution: predictiveDistribution.tierDistribution.map(v => `${v.toFixed(1)}%`),
+          spawnPoolSize: cachedPredictiveTiers.length,
+          varietyEnabled: config.varietyEnabled ?? true,
+          mode: 'PREDICTIVE'
+        });
+      } catch (error) {
+        console.error('[BeerBase] ⚠️ Predictive distribution failed, falling back to current levels:', error);
+        // Fallback to current distribution
+        cachedDistribution = await analyzePlayerLevelDistribution();
+        cachedSmartTiers = generateSmartPowerTierDistribution(cachedDistribution, config);
+        lastDistributionUpdate = now;
+      }
+    } else {
+      // Use current player level distribution
+      cachedDistribution = await analyzePlayerLevelDistribution();
+      cachedSmartTiers = generateSmartPowerTierDistribution(cachedDistribution, config);
+      lastDistributionUpdate = now;
+      
+      console.log('[BeerBase] 📊 Current player distribution updated:', {
+        totalActivePlayers: cachedDistribution.totalPlayers,
+        distribution: {
+          weak: `${cachedDistribution.weak}%`,
+          mid: `${cachedDistribution.mid}%`,
+          strong: `${cachedDistribution.strong}%`,
+          elite: `${cachedDistribution.elite}%`,
+          ultra: `${cachedDistribution.ultra}%`,
+          legendary: `${cachedDistribution.legendary}%`
+        },
+        spawnPoolSize: cachedSmartTiers?.length || 0,
+        varietyEnabled: config.varietyEnabled ?? true,
+        mode: 'CURRENT'
+      });
+    }
+  }
+  
+  // Select from appropriate cache (predictive or current)
+  const tierPool = config.usePredictiveSpawning ? cachedPredictiveTiers : cachedSmartTiers;
+  
+  if (!tierPool || tierPool.length === 0) {
+    // Fallback to random if no cache available
+    console.warn('[BeerBase] ⚠️ No tier pool available, using random fallback');
+    return selectRandomPowerTier();
+  }
+  
+  // Select random tier from weighted distribution
+  const randomIndex = Math.floor(Math.random() * tierPool.length);
+  return tierPool[randomIndex];
+}
+
+/**
+ * Select random power tier with weighted distribution (LEGACY)
  * Most Beer Bases are Mid-Strong, fewer Weak/Elite, rare Ultra/Legendary
+ * 
+ * NOTE: This is now ONLY used as a fallback if smart spawning fails
  */
 function selectRandomPowerTier(): PowerTier {
   const roll = Math.random() * 100;
@@ -433,14 +1124,20 @@ export async function spawnBeerBase(): Promise<string> {
   
   const specialization = specializations[Math.floor(Math.random() * specializations.length)];
   
-  // Select random power tier for this Beer Base
-  const powerTier = selectRandomPowerTier();
+  // Select smart power tier based on active player levels
+  let powerTier: PowerTier;
+  try {
+    powerTier = await selectSmartPowerTier();
+  } catch (error) {
+    console.error('[BeerBase] ⚠️ Smart tier selection failed, using random fallback:', error);
+    powerTier = selectRandomPowerTier();
+  }
   
   // Generate position
   const position = getRandomPosition();
   
-  // Generate base bot using createBot service
-  const bot = await createBot(null, specialization, true); // null zone = random, true = is Beer Base
+  // Generate base bot using createBotPlayer service
+  const bot = await createBotPlayer(null, specialization, true); // null zone = random, true = is Beer Base
   
   // Override position to be truly random (not zone-constrained)
   bot.base = position;
@@ -507,10 +1204,21 @@ export async function spawnBeerBase(): Promise<string> {
     energy: Math.floor((bot.resources?.energy || 1000) * multiplier),
   };
   
+  // CRITICAL FIX: Add top-level isSpecialBase field for easier querying
+  // createBotPlayer() sets it in botConfig, but we need it at top level too
+  bot.isSpecialBase = true;
+  
   // Insert into database
   await db.collection('players').insertOne(bot);
   
-  console.log(`🍺 Spawned Beer Base: ${bot.username} (${powerTier}) | STR: ${totalStrength} | DEF: ${totalDefense} | Units: ${units.length}`);
+  // Record spawn event for analytics
+  await recordSpawnEvent(
+    powerTierToNumber(powerTier),
+    position,
+    'auto' // Will be overridden by schedule or manual spawn functions
+  );
+  
+  // console.log(`🍺 Spawned Beer Base: ${bot.username} (${powerTier}) | STR: ${totalStrength} | DEF: ${totalDefense} | Units: ${units.length}`); // Commented out to reduce console spam
   
   return bot.username;
 }
@@ -598,9 +1306,59 @@ export async function weeklyBeerBaseRespawn(): Promise<{
 
 /**
  * Get next scheduled Beer Base respawn time
+ * Supports both legacy single schedule and dynamic multiple schedules
+ * 
+ * @param config - Beer Base configuration
+ * @returns Next respawn date
  */
 export function getNextRespawnTime(config: BeerBaseConfig = DEFAULT_CONFIG): Date {
   const now = new Date();
+  
+  // Use dynamic schedules if enabled
+  if (config.schedulesEnabled && config.schedules && config.schedules.length > 0) {
+    const enabledSchedules = config.schedules.filter(s => s.enabled);
+    
+    if (enabledSchedules.length === 0) {
+      // Fallback to legacy if no enabled schedules
+      return calculateLegacyNextRespawn(now, config);
+    }
+    
+    // Find next occurrence for each schedule
+    const nextTimes = enabledSchedules.map(schedule => {
+      const { dayOfWeek, hour, timezone } = schedule;
+      
+      // Get current time in schedule's timezone
+      const tzNow = new Date(now.toLocaleString('en-US', { timeZone: timezone }));
+      const currentDay = tzNow.getDay();
+      const currentHour = tzNow.getHours();
+      
+      // Calculate days until next occurrence
+      let daysUntil = dayOfWeek - currentDay;
+      if (daysUntil < 0 || (daysUntil === 0 && currentHour >= hour)) {
+        daysUntil += 7; // Next week
+      }
+      
+      // Create next occurrence date
+      const next = new Date(tzNow);
+      next.setDate(next.getDate() + daysUntil);
+      next.setHours(hour, 0, 0, 0);
+      
+      return next;
+    });
+    
+    // Return earliest next time
+    return new Date(Math.min(...nextTimes.map(d => d.getTime())));
+  }
+  
+  // Fallback to legacy single schedule
+  return calculateLegacyNextRespawn(now, config);
+}
+
+/**
+ * Calculate next respawn using legacy single schedule
+ * @private
+ */
+function calculateLegacyNextRespawn(now: Date, config: BeerBaseConfig): Date {
   const nextRespawn = new Date();
   
   // Set to target day and hour
@@ -716,19 +1474,53 @@ export async function manualBeerBaseRespawn(): Promise<{
 // IMPLEMENTATION NOTES
 // ============================================================
 // Beer Bases are designed as high-value, temporary targets:
-// 1. Spawn Rate: 5-10% of bot population (configurable)
-// 2. Resources: 3x multiplier (configurable)
+// 1. Spawn Rate: 5-10% of bot population (configurable via admin)
+// 2. Resources: 3x multiplier (configurable via admin)
 // 3. Lifecycle: Spawn weekly → Exist until defeated → Removed
 // 4. Weekly Reset: Sunday 4 AM removes ALL and spawns new ones
 // 5. Specialization: Weighted toward Hoarders (most valuable)
-// 6. Tiers: Weighted toward T2-T3 (balanced challenge)
-// 7. Integration: isSpecialBase flag used by scanner, combat
-// 8. Admin: Full control over spawn rate, multiplier, schedule
+// 6. Smart Spawning: Analyzes active player levels (last 7 days)
+// 7. Power Tier Distribution: Spread approach (40% same tier, 30% upper, 10% lower, 20% upper+2)
+// 8. Integration: isSpecialBase flag used by scanner, combat
+// 9. Admin: Full control via /api/admin/beer-bases/config
+// 10. Caching: Player distribution cached 15min to reduce DB load
+// 
+// SMART SPAWNING ALGORITHM:
+// - Analyzes active players (last 7 days) by level
+// - Maps levels to power tiers:
+//   * Levels 1-10  → Weak/Mid tiers
+//   * Levels 11-20 → Mid/Strong tiers
+//   * Levels 21-30 → Strong/Elite tiers
+//   * Levels 31-40 → Elite/Ultra tiers
+//   * Levels 41-50 → Ultra/Legendary tiers
+//   * Levels 51+   → Legendary tier
+// - Spread distribution ensures variety:
+//   * 40% spawn at player's tier (fair targets)
+//   * 30% spawn one tier up (challenge)
+//   * 10% spawn one tier down (easier targets)
+//   * 20% spawn two tiers up (rare challenges)
+// - Example: 80% of players level 21-30 (Strong tier):
+//   * 32% Strong Beer Bases (same tier)
+//   * 24% Elite Beer Bases (one up)
+//   * 8% Mid Beer Bases (one down)
+//   * 16% Ultra Beer Bases (two up)
+// 
+// ADMIN CONFIGURATION:
+// - Config stored in gameConfig collection (type: 'beerBase')
+// - Admin can control via POST /api/admin/beer-bases/config:
+//   * spawnRateMin/Max (default 5-10%)
+//   * resourceMultiplier (default 3x, range 1-20x)
+//   * respawnDay (0=Sunday through 6=Saturday)
+//   * respawnHour (0-23, default 4 AM)
+//   * enabled (master on/off switch)
+// - Admin can manually trigger respawn via POST /api/admin/beer-bases/respawn
 // 
 // FUTURE ENHANCEMENTS:
-// - Bounty system integration (bonus rewards)
-// - Achievement for defeating Beer Bases
+// - Per-tier resource multipliers (Legendary = 10x, Weak = 1.5x)
+// - Bounty system integration (bonus rewards for challenging targets)
+// - Achievement for defeating Beer Bases (by tier)
 // - Leaderboard for most Beer Bases defeated
-// - Special loot tables (rare items)
-// - Notification when Beer Base spawns nearby
+// - Special loot tables (rare items, blueprints)
+// - Notification when Beer Base spawns nearby (VIP feature)
+// - Regional Beer Base distribution (avoid clustering)
 // ============================================================

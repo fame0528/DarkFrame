@@ -51,6 +51,7 @@ import {
   animatePlayerMarker,
   removePlayerMarker
 } from './PlayerMarker';
+import { isTypingInInput } from '@/hooks/useKeyboardShortcut';
 
 /**
  * Props for MapContainer component
@@ -588,7 +589,7 @@ export default function MapContainer({
       if (!appRef.current) return;
       
       // Ignore if typing in input field
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      if (isTypingInInput()) {
         return;
       }
       

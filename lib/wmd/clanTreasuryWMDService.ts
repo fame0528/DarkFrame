@@ -32,7 +32,7 @@
  */
 
 import { Db, ObjectId } from 'mongodb';
-import type { ClanBank, ClanBankTransaction, BankTransactionType } from '@/types/clan.types';
+import type { ClanBank, ClanBankTransaction, ClanBankTransactionType } from '@/types/clan.types';
 
 /**
  * WMD purchase types
@@ -224,7 +224,7 @@ export async function deductWMDCost(
           'bank.transactions': {
             $each: [{
               transactionId,
-              type: 'WMD_PURCHASE' as BankTransactionType,
+              type: 'WMD_PURCHASE' as ClanBankTransactionType,
               playerId: requestedBy,
               username: requestedByUsername,
               amount: { metal: cost.metal, energy: cost.energy },
@@ -304,7 +304,7 @@ export async function refundWMDCost(
           'bank.transactions': {
             $each: [{
               transactionId: `refund_${transactionId}`,
-              type: 'WMD_REFUND' as BankTransactionType,
+              type: 'WMD_REFUND' as ClanBankTransactionType,
               playerId: transaction.requestedBy,
               username: transaction.requestedByUsername,
               amount: { metal: transaction.cost.metal, energy: transaction.cost.energy },

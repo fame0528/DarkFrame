@@ -12,25 +12,36 @@
  * - No cooldown applied (just checking status)
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { scanForBots, getScannerStatus } from '@/lib/botScannerService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 
-export async function GET(request: Request) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
+
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('bot-scanner-get');
+  const endTimer = log.time('bot-scanner-get');
   try {
     const { searchParams } = new URL(request.url);
     const username = searchParams.get('username');
     const action = searchParams.get('action');
     
     if (!username) {
-      return NextResponse.json(
-        { success: false, message: 'Username required' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'Username required');
     }
     
     // Status check (no cooldown applied)
     if (action === 'status') {
       const status = await getScannerStatus(username);
+      log.info('Bot scanner status retrieved', { username });
       return NextResponse.json({ success: true, status });
     }
     
@@ -38,16 +49,17 @@ export async function GET(request: Request) {
     const result = await scanForBots(username);
     
     if (!result.success) {
+      log.warn('Bot scan failed', { username, reason: result.message });
       return NextResponse.json(result, { status: 400 });
     }
     
+    log.info('Bot scan completed', { username, botsFound: result.bots?.length || 0 });
     return NextResponse.json(result);
     
   } catch (error) {
-    console.error('[API Bot Scanner] Error:', error);
-    return NextResponse.json(
-      { success: false, message: 'Scanner error occurred' },
-      { status: 500 }
-    );
+    log.error('Bot scanner error', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

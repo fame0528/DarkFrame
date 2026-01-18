@@ -23,7 +23,7 @@
  * });
  * 
  * // Emit events
- * emit('chat:send_message', { clanId: '123', message: 'Hello!' });
+ * emit('chat:send_message', { channelId: 'general', content: 'Hello!' });
  * ```
  */
 
@@ -366,16 +366,16 @@ export function useClanEvents() {
 export function useChatEvents() {
   const { on, emit, isConnected } = useWebSocket();
 
-  const sendMessage = useCallback((clanId: string, content: string, callback?: (response: { success: boolean; error?: string }) => void) => {
-    emit('chat:send_message', { clanId, content }, callback);
+  const sendMessage = useCallback((channelId: string, content: string, callback?: (response: { success: boolean; error?: string }) => void) => {
+    emit('chat:send_message', { channelId, content }, callback);
   }, [emit]);
 
-  const startTyping = useCallback((clanId: string) => {
-    emit('chat:start_typing', { clanId });
+  const startTyping = useCallback((channelId: string) => {
+    emit('chat:start_typing', { channelId });
   }, [emit]);
 
-  const stopTyping = useCallback((clanId: string) => {
-    emit('chat:stop_typing', { clanId });
+  const stopTyping = useCallback((channelId: string) => {
+    emit('chat:stop_typing', { channelId });
   }, [emit]);
 
   return {

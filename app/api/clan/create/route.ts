@@ -1,127 +1,104 @@
 /**
- * Clan Creation API Route
- * POST /api/clan/create
+ * @file app/api/clan/create/route.ts
+ * @created 2025-10-17
+ * @updated 2025-10-23 (FID-20251023-001: Refactored to use centralized auth + JSDoc)
  * 
- * Creates a new clan with the authenticated player as leader.
- * Validates clan name/tag uniqueness, checks resource balance,
- * and deducts creation cost (1.5M Metal + 1.5M Energy).
+ * OVERVIEW:
+ * Clan creation endpoint. Allows players to create new clans with unique names and tags.
+ * Validates naming rules, checks resource balance, and deducts creation cost.
+ * 
+ * ROUTES:
+ * - POST /api/clan/create - Create new clan
+ * 
+ * AUTHENTICATION:
+ * - Requires valid JWT token in 'token' cookie
+ * - Uses requireAuth() middleware
+ * 
+ * BUSINESS RULES:
+ * - Player must not already be in a clan
+ * - Clan name: 3-30 characters
+ * - Clan tag: 2-4 uppercase alphanumeric characters
+ * - Creation cost: 1.5M Metal + 1.5M Energy
+ * - Player becomes clan leader automatically
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import clientPromise from '@/lib/mongodb';
+import { 
+  getClientAndDatabase, 
+  requireAuth,
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  CreateClanSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
 import { createClan, initializeClanService } from '@/lib/clanService';
 import { CLAN_NAMING_RULES } from '@/types/clan.types';
+import { ZodError } from 'zod';
 
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'your-secret-key-change-in-production'
-);
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.clanCreate);
 
 /**
  * POST /api/clan/create
  * Create a new clan
  * 
- * Request body:
- * {
- *   name: string,        // Clan name (3-30 characters)
- *   tag: string,         // Clan tag (2-4 uppercase alphanumeric)
- *   description?: string // Optional description
- * }
+ * @param request - NextRequest with authentication cookie and clan data in body
+ * @returns NextResponse with created clan data
  * 
- * Response:
- * {
- *   success: true,
- *   clan: Clan           // Created clan object
- * }
+ * @example
+ * POST /api/clan/create
+ * Body: { name: "Elite Warriors", tag: "EW", description: "Best clan" }
+ * Response: { success: true, clan: {...}, message: "Clan EW created successfully!" }
+ * 
+ * @throws {400} Clan name and tag required
+ * @throws {400} Invalid name/tag length or format
+ * @throws {400} Already in a clan
+ * @throws {400} Insufficient resources
+ * @throws {401} Unauthorized
+ * @throws {409} Name or tag already exists
+ * @throws {500} Failed to create clan
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('ClanCreateAPI');
+  const endTimer = log.time('clanCreate');
+  
   try {
-    // Check authentication via JWT cookie
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
+    const { client, db } = await getClientAndDatabase();
+
+    const auth = await requireAuth(request, db);
+    if (auth instanceof NextResponse) {
+      log.warn('Unauthenticated clan creation attempt');
+      return auth;
     }
 
-    let username: string;
-    try {
-      const verified = await jwtVerify(token, JWT_SECRET);
-      username = verified.payload.username as string;
-    } catch (error) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid session' },
-        { status: 401 }
-      );
-    }
-
-    // Parse request body
     const body = await request.json();
-    const { name, tag, description } = body;
+    const validated = CreateClanSchema.parse(body);
 
-    // Validate required fields
-    if (!name || !tag) {
-      return NextResponse.json(
-        { success: false, error: 'Clan name and tag are required' },
-        { status: 400 }
-      );
-    }
+    log.debug('Creating clan', { 
+      playerId: auth.playerId, 
+      name: validated.name,
+      tag: validated.tag 
+    });
 
-    // Validate name length
-    if (name.length < CLAN_NAMING_RULES.NAME_MIN_LENGTH || name.length > CLAN_NAMING_RULES.NAME_MAX_LENGTH) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Clan name must be ${CLAN_NAMING_RULES.NAME_MIN_LENGTH}-${CLAN_NAMING_RULES.NAME_MAX_LENGTH} characters`,
-        },
-        { status: 400 }
-      );
-    }
-
-    // Validate tag length and format
-    if (tag.length < CLAN_NAMING_RULES.TAG_MIN_LENGTH || tag.length > CLAN_NAMING_RULES.TAG_MAX_LENGTH) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Clan tag must be ${CLAN_NAMING_RULES.TAG_MIN_LENGTH}-${CLAN_NAMING_RULES.TAG_MAX_LENGTH} characters`,
-        },
-        { status: 400 }
-      );
-    }
-
-    if (!CLAN_NAMING_RULES.TAG_PATTERN.test(tag)) {
-      return NextResponse.json(
-        { success: false, error: 'Clan tag must be uppercase alphanumeric only' },
-        { status: 400 }
-      );
-    }
-
-    // Get database connection
-    const client = await clientPromise;
-    const db = client.db('darkframe');
-
-    // Initialize clan service
     initializeClanService(client, db);
 
-    // Get player by username
-    const player = await db.collection('players').findOne({ username });
-    if (!player) {
-      return NextResponse.json(
-        { success: false, error: 'Player not found' },
-        { status: 404 }
-      );
-    }
-
-    const playerId = player._id.toString();
-
-    // Create clan
     const clan = await createClan(
-      playerId,
-      name.trim(),
-      tag.toUpperCase().trim(),
-      description?.trim() || ''
+      auth.playerId,
+      validated.name.trim(),
+      validated.tag.toUpperCase().trim(),
+      validated.description?.trim() || ''
     );
+
+    log.info('Clan created successfully', { 
+      playerId: auth.playerId,
+      clanId: clan._id,
+      clanName: clan.name,
+      clanTag: clan.tag
+    });
 
     return NextResponse.json({
       success: true,
@@ -130,33 +107,34 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error: any) {
-    console.error('Clan creation error:', error);
+    if (error instanceof ZodError) {
+      log.warn('Clan creation validation failed', { issues: error.issues });
+      return createValidationErrorResponse(error);
+    }
+
+    log.error('Clan creation error', error instanceof Error ? error : new Error(String(error)));
 
     // Handle specific errors
     if (error.message?.includes('already exists')) {
-      return NextResponse.json(
-        { success: false, error: error.message },
-        { status: 409 }
-      );
+      return createErrorResponse(ErrorCode.CLAN_NAME_TAKEN, { 
+        message: error.message 
+      });
     }
 
     if (error.message?.includes('already in a clan')) {
-      return NextResponse.json(
-        { success: false, error: 'You are already in a clan' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.CLAN_ALREADY_MEMBER, {
+        message: 'You are already in a clan'
+      });
     }
 
     if (error.message?.includes('Insufficient')) {
-      return NextResponse.json(
-        { success: false, error: error.message },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.INSUFFICIENT_RESOURCES, { 
+        message: error.message 
+      });
     }
 
-    return NextResponse.json(
-      { success: false, error: 'Failed to create clan' },
-      { status: 500 }
-    );
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

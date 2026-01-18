@@ -27,7 +27,7 @@ import {
   Clan,
   ClanBank,
   ClanBankTransaction,
-  BankTransactionType,
+  ClanBankTransactionType,
   ClanActivityType,
   CLAN_BANK_CONSTANTS,
   calculateTaxAmount,
@@ -142,7 +142,7 @@ export async function depositToBank(
   // Create transaction record
   const transaction: ClanBankTransaction = {
     transactionId: new ObjectId().toString(),
-    type: BankTransactionType.DEPOSIT,
+    type: ClanBankTransactionType.DEPOSIT,
     playerId,
     username: member.username,
     amount: {
@@ -265,7 +265,7 @@ export async function withdrawFromBank(
   // Create transaction record
   const transaction: ClanBankTransaction = {
     transactionId: new ObjectId().toString(),
-    type: BankTransactionType.WITHDRAWAL,
+    type: ClanBankTransactionType.WITHDRAWAL,
     playerId,
     username: member.username,
     amount: {
@@ -446,7 +446,7 @@ export async function collectTax(
   // Create transaction record
   const transaction: ClanBankTransaction = {
     transactionId: new ObjectId().toString(),
-    type: BankTransactionType.TAX_COLLECTION,
+    type: ClanBankTransactionType.TAX_COLLECTION,
     playerId,
     username: member.username,
     amount: {
@@ -552,7 +552,7 @@ export async function upgradeBankCapacity(
   // Create transaction record
   const transaction: ClanBankTransaction = {
     transactionId: new ObjectId().toString(),
-    type: BankTransactionType.BANK_UPGRADE,
+    type: ClanBankTransactionType.BANK_UPGRADE,
     playerId,
     username: member.username,
     amount: {

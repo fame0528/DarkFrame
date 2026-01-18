@@ -1,28 +1,34 @@
 /**
- * Admin Warfare Configuration API
- * 
- * Created: 2025-10-18
+ * @file app/api/admin/warfare/config/route.ts
+ * @created 2025-10-18
+ * @updated 2025-10-23 (FID-20251023-001: Auth deduplication + JSDoc)
  * 
  * OVERVIEW:
  * Admin-only endpoint for viewing and updating warfare system configuration.
  * All parameters can be modified in real-time without server restart.
+ * Supports config history tracking and validation.
  * 
- * Features:
- * - GET: View current configuration
- * - POST: Update configuration with validation
- * - Config history tracking
- * - Admin password protection
+ * ROUTES:
+ * - GET /api/admin/warfare/config - View current config (optional history)
+ * - POST /api/admin/warfare/config - Update config (admin password required)
  * 
- * Authentication:
- * - Requires valid JWT token
- * - Requires admin password for POST
+ * AUTHENTICATION:
+ * - requireAuth() for both handlers
+ * - Admin password verification for POST
  * 
- * @module app/api/admin/warfare/config
+ * BUSINESS RULES:
+ * - Only authenticated users can view config
+ * - Admin password required to update config
+ * - All config changes validated before saving
+ * - Config history maintained (last 10 versions)
+ * - Changes attributed to username/playerId
  */
 
+/* diagnostics-refresh: touched file to force VS Code diagnostics refresh */
+
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import { MongoClient } from 'mongodb';
+import { getClientAndDatabase } from '@/lib/mongodb';
+import { requireAuth } from '@/lib/authMiddleware';
 import {
   initializeWarfareConfigService,
   loadWarfareConfig,
@@ -31,61 +37,64 @@ import {
   getConfigHistory,
   type WarfareConfig,
 } from '@/lib/warfareConfigService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'your-secret-key');
-const MONGODB_URI = process.env.MONGODB_URI || '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-
-let client: MongoClient | null = null;
-
-/**
- * Get MongoDB client (singleton)
- */
-async function getMongoClient(): Promise<MongoClient> {
-  if (!client) {
-    client = new MongoClient(MONGODB_URI);
-    await client.connect();
-    const db = client.db('darkframe');
-    initializeWarfareConfigService(client, db);
-  }
-  return client;
-}
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 /**
  * GET /api/admin/warfare/config
  * View current warfare configuration
  * 
- * Query params:
- * - history (optional): If 'true', returns last 10 config versions
+ * @param request - NextRequest with auth cookie and optional query params
+ * @returns NextResponse with config and optional history
  * 
- * Returns:
- * - config: Current configuration object
- * - history (optional): Array of past configurations
+ * @example
+ * GET /api/admin/warfare/config
+ * Response: {
+ *   success: true,
+ *   config: {
+ *     flagCapturePoints: 1000,
+ *     defenderBonus: 1.2,
+ *     ...
+ *   }
+ * }
+ * 
+ * @example
+ * GET /api/admin/warfare/config?history=true
+ * Response: {
+ *   success: true,
+ *   config: {...},
+ *   history: [
+ *     { version: 5, config: {...}, updatedAt: "...", updatedBy: "admin" },
+ *     ...
+ *   ]
+ * }
+ * 
+ * @throws {401} Not authenticated
+ * @throws {500} Server error
  */
-export async function GET(request: NextRequest): Promise<NextResponse> {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest): Promise<NextResponse> => {
+  const log = createRouteLogger('admin-warfare-config-get');
+  const endTimer = log.time('admin-warfare-config-get');
+
   try {
-    // Get auth token
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+    const { db, client } = await getClientAndDatabase();
+    const result = await requireAuth(request, db);
+    if (result instanceof NextResponse) {
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
 
-    // Verify JWT
-    const { payload } = await jwtVerify(token, JWT_SECRET);
-    const playerId = payload.playerId as string;
-
-    if (!playerId) {
-      return NextResponse.json(
-        { error: 'Invalid token' },
-        { status: 401 }
-      );
-    }
-
-    // Get MongoDB client
-    await getMongoClient();
+    // Initialize warfare service with client
+    initializeWarfareConfigService(client, db);
 
     // Check if history requested
     const { searchParams } = new URL(request.url);
@@ -96,6 +105,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
     if (includeHistory) {
       const history = await getConfigHistory(10);
+      log.info('Warfare config loaded with history', { 
+        historyEntries: history.length,
+        includeHistory: true 
+      });
       return NextResponse.json({
         success: true,
         config,
@@ -103,82 +116,80 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       });
     }
 
+    log.info('Warfare config loaded', { includeHistory: false });
     return NextResponse.json({
       success: true,
       config,
     });
 
-  } catch (error: any) {
-    console.error('Error loading warfare config:', error);
-    return NextResponse.json(
-      { error: error.message || 'Failed to load configuration' },
-      { status: 500 }
-    );
+  } catch (error) {
+    log.error('Error loading warfare config', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * POST /api/admin/warfare/config
  * Update warfare configuration (admin only)
  * 
- * Body:
- * - config (required): New configuration object
- * - adminPassword (required): Admin password
- * - username (optional): Admin username for logging
+ * @param request - NextRequest with auth cookie and body data
+ * @returns NextResponse with updated config
  * 
- * Returns:
- * - success: Whether update succeeded
- * - config: New configuration
- * - version: New version number
+ * @example
+ * POST /api/admin/warfare/config
+ * Body: {
+ *   config: {
+ *     flagCapturePoints: 1200,
+ *     defenderBonus: 1.3,
+ *     ...
+ *   },
+ *   adminPassword: "secret123"
+ * }
+ * Response: {
+ *   success: true,
+ *   config: {...},
+ *   version: 6,
+ *   message: "Configuration updated successfully"
+ * }
+ * 
+ * @throws {400} Missing config or validation errors
+ * @throws {401} Not authenticated
+ * @throws {403} Invalid admin password
+ * @throws {500} Server error
  */
-export async function POST(request: NextRequest): Promise<NextResponse> {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest): Promise<NextResponse> => {
+  const log = createRouteLogger('admin-warfare-config-post');
+  const endTimer = log.time('admin-warfare-config-post');
+
   try {
-    // Get auth token
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+    const { db, client } = await getClientAndDatabase();
+    const auth = await requireAuth(request, db);
+    if (auth instanceof NextResponse) {
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
 
-    // Verify JWT
-    const { payload } = await jwtVerify(token, JWT_SECRET);
-    const playerId = payload.playerId as string;
-    const username = payload.username as string;
-
-    if (!playerId) {
-      return NextResponse.json(
-        { error: 'Invalid token' },
-        { status: 401 }
-      );
-    }
+    // Initialize warfare service with client
+    initializeWarfareConfigService(client, db);
 
     // Parse request body
     const body = await request.json();
     const { config, adminPassword } = body;
 
     if (!config) {
-      return NextResponse.json(
-        { error: 'config is required' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'config is required');
     }
 
     // Verify admin password
     if (adminPassword !== ADMIN_PASSWORD) {
-      return NextResponse.json(
-        { error: 'Admin authorization required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, 'Admin authorization required');
     }
-
-    // Get MongoDB client
-    await getMongoClient();
 
     // Validate configuration first
     const validation = validateWarfareConfig(config);
     if (!validation.valid) {
+      log.warn('Invalid warfare config validation', { validationErrors: validation.errors });
       return NextResponse.json(
         { 
           error: 'Invalid configuration',
@@ -189,7 +200,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     // Save configuration
-    const savedConfig = await saveWarfareConfig(config, username || playerId);
+    const savedConfig = await saveWarfareConfig(config, auth.username || auth.playerId);
+
+    log.info('Warfare config updated', {
+      version: savedConfig.version,
+      updatedBy: auth.username || auth.playerId,
+      changedFields: Object.keys(config).length
+    });
 
     return NextResponse.json({
       success: true,
@@ -198,11 +215,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       message: 'Configuration updated successfully',
     });
 
-  } catch (error: any) {
-    console.error('Error updating warfare config:', error);
-    return NextResponse.json(
-      { error: error.message || 'Failed to update configuration' },
-      { status: 500 }
-    );
+  } catch (error) {
+    log.error('Error updating warfare config', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

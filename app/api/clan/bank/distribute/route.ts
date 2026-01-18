@@ -1,33 +1,34 @@
 /**
- * Clan Fund Distribution API
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/bank/distribute/route.ts
+ * @created 2025-10-18
+ * @updated 2025-10-23 (FID-20251023-001: Refactored to use centralized auth + JSDoc)
  * 
  * OVERVIEW:
- * API endpoint for distributing clan bank resources to members.
+ * Clan fund distribution endpoint. Distributes clan bank resources to members.
  * Supports 4 distribution methods: equal split, percentage-based, merit-based, and direct grant.
  * 
- * Endpoints:
- * - POST: Distribute funds using chosen method
+ * ROUTES:
+ * - POST /api/clan/bank/distribute - Distribute clan funds
  * 
- * Security:
- * - JWT authentication required
- * - Role-based permissions enforced
- * - Daily limits for Co-Leaders
- * - Balance validation before distribution
+ * AUTHENTICATION:
+ * - Requires clan membership via requireClanMembership()
  * 
- * Distribution Methods:
- * 1. Equal Split: Divide equally among all members
- * 2. Percentage: Custom percentage per role or player (must total 100%)
- * 3. Merit: Based on contribution metrics (territories, wars, donations)
- * 4. Direct Grant: Transfer to specific players
+ * BUSINESS RULES:
+ * - Only leaders and co-leaders can distribute funds
+ * - Co-leaders have daily distribution limits
+ * - Percentage distributions must total 100%
+ * - Merit-based uses contribution metrics
+ * - All distributions logged for accountability
  * 
- * @module app/api/clan/bank/distribute/route
+ * DISTRIBUTION METHODS:
+ * 1. EQUAL_SPLIT: Divide equally among all members
+ * 2. PERCENTAGE: Custom percentage per role or player (must total 100%)
+ * 3. MERIT: Based on contribution metrics (territories, wars, donations)
+ * 4. DIRECT_GRANT: Transfer to specific players
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import { MongoClient, Db, ObjectId } from 'mongodb';
+import { getClientAndDatabase, requireClanMembership } from '@/lib';
 import {
   distributeEqualSplit,
   distributeByPercentage,
@@ -39,119 +40,53 @@ import {
   DEFAULT_MERIT_WEIGHTS,
 } from '@/lib/clanDistributionService';
 
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'your-secret-key');
-const MONGODB_URI = process.env.MONGODB_URI || '';
-const MONGODB_DB = process.env.MONGODB_DB || 'darkframe';
-
-let cachedClient: MongoClient | null = null;
-let cachedDb: Db | null = null;
-
-async function connectToDatabase() {
-  if (cachedClient && cachedDb) {
-    return { client: cachedClient, db: cachedDb };
-  }
-
-  const client = await MongoClient.connect(MONGODB_URI);
-  const db = client.db(MONGODB_DB);
-
-  cachedClient = client;
-  cachedDb = db;
-
-  // Initialize distribution service
-  initializeDistributionService(client, db);
-
-  return { client, db };
-}
-
 /**
  * POST /api/clan/bank/distribute
- * 
  * Distribute clan funds to members
  * 
- * Request Body (Equal Split):
- * {
- *   "method": "EQUAL_SPLIT",
- *   "resourceType": "metal" | "energy" | "rp",
- *   "totalAmount": 100000
- * }
+ * @param request - NextRequest with authentication cookie and distribution data in body
+ * @returns NextResponse with distribution results
  * 
- * Request Body (Percentage):
- * {
- *   "method": "PERCENTAGE",
- *   "resourceType": "metal" | "energy" | "rp",
- *   "totalAmount": 100000,
- *   "percentageMap": {
- *     "playerId1": 40,
- *     "playerId2": 30,
- *     "playerId3": 30
- *   }
- * }
+ * @example
+ * POST /api/clan/bank/distribute (Equal Split)
+ * Body: { method: "EQUAL_SPLIT", resourceType: "metal", totalAmount: 100000 }
+ * Response: { success: true, distribution: { method: "EQUAL_SPLIT", totalDistributed: {...}, recipients: [...] } }
  * 
- * Request Body (Merit):
- * {
- *   "method": "MERIT",
- *   "resourceType": "metal" | "energy" | "rp",
- *   "totalAmount": 100000,
- *   "weights": {  // Optional, uses defaults if omitted
- *     "territoriesClaimed": 0.4,
- *     "warsParticipated": 0.3,
- *     "resourcesDonated": 0.3
- *   }
- * }
+ * @example
+ * POST /api/clan/bank/distribute (Percentage)
+ * Body: { method: "PERCENTAGE", resourceType: "metal", totalAmount: 100000, percentageMap: { player1: 40, player2: 60 } }
  * 
- * Request Body (Direct Grant):
- * {
- *   "method": "DIRECT_GRANT",
- *   "grants": [
- *     { "playerId": "xxx", "metal": 10000, "energy": 5000 },
- *     { "playerId": "yyy", "rp": 500 }
- *   ]
- * }
+ * @example
+ * POST /api/clan/bank/distribute (Merit)
+ * Body: { method: "MERIT", resourceType: "rp", totalAmount: 5000, weights: { territoriesClaimed: 0.5, ... } }
  * 
- * Response:
- * {
- *   "success": true,
- *   "distribution": {
- *     "method": "EQUAL_SPLIT",
- *     "totalDistributed": { "metal": 100000, "energy": 0, "rp": 0 },
- *     "recipients": [...],
- *     "timestamp": "2025-10-18T..."
- *   }
- * }
+ * @example
+ * POST /api/clan/bank/distribute (Direct Grant)
+ * Body: { method: "DIRECT_GRANT", grants: [{ playerId: "abc", metal: 10000, energy: 5000 }] }
+ * 
+ * @throws {400} Invalid distribution method or missing parameters
+ * @throws {401} Unauthorized
+ * @throws {403} Insufficient permissions
+ * @throws {500} Failed to distribute funds
  */
 export async function POST(request: NextRequest) {
   try {
-    // Verify authentication
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
-    }
+    const { client, db } = await getClientAndDatabase();
 
-    const { payload } = await jwtVerify(token, JWT_SECRET);
-    const playerId = payload.sub as string;
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    const { auth, clanId } = result;
 
-    // Parse request body
+    initializeDistributionService(client, db);
+
     const body = await request.json();
     const { method, resourceType, totalAmount, percentageMap, weights, grants } = body;
 
-    // Validate method
     if (!Object.values(DistributionMethod).includes(method)) {
       return NextResponse.json({ error: 'Invalid distribution method' }, { status: 400 });
     }
 
-    // Get player's clan
-    const { db } = await connectToDatabase();
-    const playersCollection = db.collection('players');
-    const player = await playersCollection.findOne({ _id: new ObjectId(playerId) });
-
-    if (!player || !player.clanId) {
-      return NextResponse.json({ error: 'Player is not in a clan' }, { status: 400 });
-    }
-
-    const clanId = player.clanId;
-
-    // Execute distribution based on method
-    let result;
+    let distributionResult;
 
     switch (method) {
       case DistributionMethod.EQUAL_SPLIT:
@@ -161,7 +96,7 @@ export async function POST(request: NextRequest) {
             { status: 400 }
           );
         }
-        result = await distributeEqualSplit(clanId, playerId, resourceType, totalAmount);
+        distributionResult = await distributeEqualSplit(clanId, auth.playerId, resourceType, totalAmount);
         break;
 
       case DistributionMethod.PERCENTAGE:
@@ -171,7 +106,7 @@ export async function POST(request: NextRequest) {
             { status: 400 }
           );
         }
-        result = await distributeByPercentage(clanId, playerId, resourceType, percentageMap, totalAmount);
+        distributionResult = await distributeByPercentage(clanId, auth.playerId, resourceType, percentageMap, totalAmount);
         break;
 
       case DistributionMethod.MERIT:
@@ -182,7 +117,7 @@ export async function POST(request: NextRequest) {
           );
         }
         const meritWeights: MeritWeights = weights || DEFAULT_MERIT_WEIGHTS;
-        result = await distributeByMerit(clanId, playerId, resourceType, totalAmount, meritWeights);
+        distributionResult = await distributeByMerit(clanId, auth.playerId, resourceType, totalAmount, meritWeights);
         break;
 
       case DistributionMethod.DIRECT_GRANT:
@@ -192,7 +127,7 @@ export async function POST(request: NextRequest) {
             { status: 400 }
           );
         }
-        result = await directGrant(clanId, playerId, grants);
+        distributionResult = await directGrant(clanId, auth.playerId, grants);
         break;
 
       default:
@@ -202,16 +137,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       distribution: {
-        method: result.method,
-        totalDistributed: result.totalDistributed,
-        recipients: result.recipients.map((r) => ({
+        method: distributionResult.method,
+        totalDistributed: distributionResult.totalDistributed,
+        recipients: distributionResult.recipients.map((r) => ({
           playerId: r.playerId,
           username: r.username,
           amount: r.amount,
           percentage: r.percentage,
         })),
-        timestamp: result.timestamp,
-        notes: result.notes,
+        timestamp: distributionResult.timestamp,
+        notes: distributionResult.notes,
       },
     });
   } catch (error: any) {
@@ -222,3 +157,4 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+

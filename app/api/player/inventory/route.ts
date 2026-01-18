@@ -9,21 +9,28 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
+import { withRequestLogging, createRouteLogger } from '@/lib';
 
 /**
  * GET /api/player/inventory
  * Fetches the authenticated player's inventory
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(async (request: NextRequest) => {
+  const log = createRouteLogger('PlayerInventoryAPI');
+  const endTimer = log.time('fetchPlayerInventory');
+  
   try {
     const playerId = request.cookies.get('playerId')?.value;
 
     if (!playerId) {
+      log.warn('Unauthenticated inventory request');
       return NextResponse.json(
         { error: 'Not authenticated' },
         { status: 401 }
       );
     }
+
+    log.debug('Fetching player inventory', { playerId });
 
     const client = await clientPromise;
     const db = client.db('darkframe');
@@ -34,6 +41,7 @@ export async function GET(request: NextRequest) {
     );
 
     if (!player) {
+      log.warn('Player not found for inventory', { playerId });
       return NextResponse.json(
         { error: 'Player not found' },
         { status: 404 }
@@ -87,16 +95,26 @@ export async function GET(request: NextRequest) {
       inventory.energyDiggerCount = 0;
     }
 
+    log.info('Player inventory fetched', { 
+      playerId, 
+      itemCount: inventory.items?.length || 0, 
+      resourceCount: inventory.resources?.length || 0,
+      usedCapacity: inventory.used || 0,
+      totalCapacity: inventory.capacity || 100
+    });
+
     return NextResponse.json(inventory);
 
   } catch (error) {
-    console.error('Error fetching player inventory:', error);
+    log.error('Failed to fetch player inventory', error as Error);
     return NextResponse.json(
       { error: 'Failed to fetch inventory' },
       { status: 500 }
     );
+  } finally {
+    endTimer();
   }
-}
+});
 
 /**
  * IMPLEMENTATION NOTES:

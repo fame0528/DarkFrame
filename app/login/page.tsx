@@ -42,7 +42,11 @@ export default function LoginPage() {
         
         router.push('/game');
       } else {
-        setError(data.error || 'Login failed');
+        // Extract message from error object (API returns {code, message, timestamp, stack})
+        const errorMessage = typeof data.error === 'object' && data.error?.message 
+          ? data.error.message 
+          : (typeof data.error === 'string' ? data.error : 'Login failed');
+        setError(errorMessage);
       }
     } catch (err) {
       console.error('❌ Login error:', err);

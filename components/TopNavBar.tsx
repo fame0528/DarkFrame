@@ -12,7 +12,7 @@ import { useRouter } from 'next/navigation';
 import { useGameContext } from '@/context/GameContext';
 import { 
   User, Trophy, BarChart3, Zap, LogOut, 
-  Settings, Clock, Users, Shield, Sparkles, Flag
+  Settings, Clock, Users, Shield, Sparkles, Flag, Mail, UserPlus
 } from 'lucide-react';
 
 interface TopNavBarProps {
@@ -24,7 +24,12 @@ interface TopNavBarProps {
   onClanClick?: () => void;
   onProfileClick?: () => void;
   onFlagTrackerClick?: () => void;
+  onWMDClick?: () => void;
+  onDMClick?: () => void; // New: DM panel toggle
+  onFriendsClick?: () => void; // New: Friends panel toggle
   flagTrackerActive?: boolean; // Visual indicator for toggle state
+  dmUnreadCount?: number; // New: Unread DM count for badge
+  friendRequestCount?: number; // New: Pending friend request count for badge
 }
 
 export default function TopNavBar({ 
@@ -36,7 +41,12 @@ export default function TopNavBar({
   onClanClick,
   onProfileClick,
   onFlagTrackerClick,
-  flagTrackerActive = false
+  onWMDClick,
+  onDMClick,
+  onFriendsClick,
+  flagTrackerActive = false,
+  dmUnreadCount = 0,
+  friendRequestCount = 0
 }: TopNavBarProps = {}) {
   const { player, logout } = useGameContext();
   const router = useRouter();
@@ -165,6 +175,40 @@ export default function TopNavBar({
             Tech Tree
           </button>
           
+          {/* Direct Messages Button */}
+          {onDMClick && (
+            <button
+              onClick={onDMClick}
+              className="relative px-3 py-1.5 text-xs text-white/80 hover:text-white hover:bg-cyan-500/20 rounded border border-cyan-500/30 transition-all flex items-center gap-1.5"
+              title="Direct Messages"
+            >
+              <Mail className="w-3.5 h-3.5" />
+              Messages
+              {dmUnreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center shadow-lg shadow-red-500/50">
+                  {dmUnreadCount > 99 ? '99+' : dmUnreadCount}
+                </span>
+              )}
+            </button>
+          )}
+          
+          {/* Friends Button */}
+          {onFriendsClick && (
+            <button
+              onClick={onFriendsClick}
+              className="relative px-3 py-1.5 text-xs text-white/80 hover:text-white hover:bg-cyan-500/20 rounded border border-cyan-500/30 transition-all flex items-center gap-1.5"
+              title="Friends"
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              Friends
+              {friendRequestCount > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 bg-amber-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center shadow-lg shadow-amber-500/50">
+                  {friendRequestCount > 99 ? '99+' : friendRequestCount}
+                </span>
+              )}
+            </button>
+          )}
+          
           {/* Flag Tracker Button - LESSON #36 */}
         {onFlagTrackerClick && (
           <button
@@ -179,31 +223,25 @@ export default function TopNavBar({
             <Flag className="w-3.5 h-3.5" />
             Flag Tracker
           </button>
-        )}          {/* Map Link */}
-          <button
-            onClick={() => router.push('/map')}
-            className="px-3 py-1.5 text-xs text-white/80 hover:text-white hover:bg-cyan-500/20 rounded border border-cyan-500/30 transition-all flex items-center gap-1.5"
-          >
-            🗺️ Map
-          </button>
+        )}
           
           {/* VIP Upgrade Link */}
           <button
             onClick={() => router.push('/game/vip-upgrade')}
             className={`px-3 py-1.5 text-xs font-semibold rounded border transition-all flex items-center gap-1.5 ${
-              player.isVIP
+              player.vip
                 ? 'text-yellow-300 hover:text-yellow-200 bg-gradient-to-r from-yellow-500/20 to-orange-500/20 hover:from-yellow-500/30 hover:to-orange-500/30 border-yellow-500/50 shadow-[0_0_10px_rgba(234,179,8,0.3)]'
                 : 'text-purple-300 hover:text-purple-200 bg-purple-500/20 hover:bg-purple-500/30 border-purple-500/40'
             }`}
-            title={player.isVIP ? 'VIP Member - View Benefits' : 'Upgrade to VIP for 2x Speed'}
+            title={player.vip ? 'VIP Member - View Benefits' : 'Upgrade to VIP for 2x Speed'}
           >
-            <Sparkles className={`w-3.5 h-3.5 ${player.isVIP ? 'animate-pulse' : ''}`} />
-            {player.isVIP ? 'VIP ⚡' : 'Get VIP'}
+            <Sparkles className={`w-3.5 h-3.5 ${player.vip ? 'animate-pulse' : ''}`} />
+            {player.vip ? 'VIP ⚡' : 'Get VIP'}
           </button>
 
           {/* WMD Link */}
           <button
-            onClick={() => router.push('/wmd')}
+            onClick={onWMDClick || (() => router.push('/wmd'))}
             className="px-3 py-1.5 text-xs text-white/80 hover:text-white hover:bg-red-500/20 rounded border border-red-500/30 transition-all flex items-center gap-1.5"
             title="Weapons of Mass Destruction"
           >

@@ -6,82 +6,100 @@
 
 import { NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  GrantVIPSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
 
-export async function POST(request: Request) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.adminVIPGrant);
+
+export const POST = withRequestLogging(rateLimiter(async (request: Request) => {
+  const log = createRouteLogger('AdminVIPGrantAPI');
+  const endTimer = log.time('grantVIP');
+  
   try {
-    const { username, days } = await request.json();
-
-    // Validate input
-    if (!username || typeof username !== 'string') {
-      return NextResponse.json(
-        { success: false, error: 'Username is required' },
-        { status: 400 }
-      );
-    }
-
-    if (!days || typeof days !== 'number' || days <= 0) {
-      return NextResponse.json(
-        { success: false, error: 'Valid number of days is required' },
-        { status: 400 }
-      );
-    }
+    const body = await request.json();
+    const validated = GrantVIPSchema.parse(body);
 
     // TODO: Add admin authentication check
     // const adminUsername = request.headers.get('x-admin-username');
     // if (!await isAdmin(adminUsername)) {
-    //   return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 403 });
+    //   return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED);
     // }
+
+    log.debug('VIP grant request', { 
+      username: validated.username, 
+      days: validated.days 
+    });
 
     const playersCollection = await getCollection('players');
     
     // Find the user
-    const user = await playersCollection.findOne({ username });
+    const user = await playersCollection.findOne({ username: validated.username });
     if (!user) {
-      return NextResponse.json(
-        { success: false, error: 'User not found' },
-        { status: 404 }
-      );
+      log.warn('User not found for VIP grant', { username: validated.username });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: 'User not found'
+      });
     }
 
     // Calculate expiration date
     const now = Date.now();
     const millisecondsPerDay = 24 * 60 * 60 * 1000;
-    const expirationTime = now + (days * millisecondsPerDay);
+    const expirationTime = now + (validated.days * millisecondsPerDay);
 
     // Update user with VIP status
     const result = await playersCollection.updateOne(
-      { username },
+      { username: validated.username },
       {
         $set: {
-          isVIP: true,
-          vipExpiresAt: new Date(expirationTime)
+          vip: true,
+          vipExpiration: new Date(expirationTime)
         }
       }
     );
 
     if (result.modifiedCount === 0) {
-      return NextResponse.json(
-        { success: false, error: 'Failed to grant VIP' },
-        { status: 500 }
-      );
+      log.error('Failed to grant VIP', new Error('Database update failed'), { 
+        username: validated.username 
+      });
+      return createErrorResponse(ErrorCode.INTERNAL_ERROR, {
+        message: 'Failed to grant VIP'
+      });
     }
 
     // TODO: Log VIP grant in analytics
     // await logVIPGrant({ username, days, grantedBy: adminUsername, grantedAt: new Date() });
 
-    console.log(`✅ VIP granted to ${username} for ${days} days (expires: ${new Date(expirationTime).toISOString()})`);
+    log.info('VIP granted successfully', { 
+      username: validated.username, 
+      days: validated.days,
+      expiresAt: new Date(expirationTime).toISOString()
+    });
 
     return NextResponse.json({
       success: true,
-      message: `VIP granted to ${username} for ${days} days`,
+      message: `VIP granted to ${validated.username} for ${validated.days} days`,
       expiresAt: new Date(expirationTime).toISOString()
     });
 
   } catch (error) {
-    console.error('Error granting VIP:', error);
-    return NextResponse.json(
-      { success: false, error: 'Database error' },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      log.warn('VIP grant validation failed', { issues: error.issues });
+      return createValidationErrorResponse(error);
+    }
+
+    log.error('Error granting VIP', error as Error);
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

@@ -24,7 +24,7 @@
 
 import { ObjectId } from 'mongodb';
 import { BotSpecialization, type Player, type Position } from '@/types/game.types';
-import { createBot } from '@/lib/botService';
+import { createBotPlayer } from '@/lib/botService';
 import { getDatabase } from '@/lib/mongodb';
 import { FLAG_CONFIG } from '@/types/flag.types';
 
@@ -106,7 +106,7 @@ export async function createFlagBot(position?: Position): Promise<Player> {
     const db = await getDatabase();
     
     // Create bot using botService pattern (zone will be calculated from final position)
-    const botData = await createBot(
+    const botData = await createBotPlayer(
       null, // Random zone (will be overridden by position)
       FLAG_BOT_CONFIG.specialization,
       false // Not a Beer Base
@@ -138,6 +138,9 @@ export async function createFlagBot(position?: Position): Promise<Player> {
     const flagsCollection = db.collection('flags');
     const existingFlag = await flagsCollection.findOne({});
     
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 8 * 60 * 1000); // 8 minutes from now
+    
     const flagData = {
       currentHolder: {
         playerId: null,
@@ -147,7 +150,16 @@ export async function createFlagBot(position?: Position): Promise<Player> {
         position: flagBot.currentPosition,
         claimedAt: new Date(),
       },
+      trail: [
+        {
+          x: spawnPosition.x,
+          y: spawnPosition.y,
+          timestamp: now,
+          expiresAt: expiresAt
+        }
+      ],
       lastTransfer: new Date(),
+      lastUpdate: new Date(),
       transferHistory: [
         {
           from: { type: 'system', id: null, username: 'System' },
@@ -232,13 +244,45 @@ export async function moveFlagBot(botId: ObjectId): Promise<Position> {
       { $set: { currentPosition: newPosition } }
     );
     
-    // Update flag position in flags collection
+    // Add trail entry for bot movement (8-minute lingering effect)
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 8 * 60 * 1000); // 8 minutes from now
+    
+    // Update flag position AND add trail entry
     await db.collection('flags').updateOne(
       { 'currentHolder.botId': botId },
-      { $set: { 'currentHolder.position': newPosition } }
+      {
+        $set: { 
+          'currentHolder.position': newPosition,
+          lastUpdate: now
+        },
+        $push: {
+          trail: {
+            $each: [{
+              x: newPosition.x,
+              y: newPosition.y,
+              timestamp: now,
+              expiresAt: expiresAt
+            }],
+            $slice: -200 // Keep only last 200 trail tiles (performance optimization)
+          }
+        } as any
+      }
     );
     
-    console.log(`� Flag bot teleported: (${bot.currentPosition.x}, ${bot.currentPosition.y}) → (${newX}, ${newY})`);
+    // Clean up expired trail tiles (older than 8 minutes)
+    await db.collection('flags').updateOne(
+      {},
+      {
+        $pull: {
+          trail: {
+            expiresAt: { $lt: now }
+          }
+        } as any
+      }
+    );
+    
+    console.log(`🤖 Flag bot teleported: (${bot.currentPosition.x}, ${bot.currentPosition.y}) → (${newX}, ${newY})`);
     
     return newPosition;
   } catch (error) {
@@ -286,7 +330,11 @@ export async function handleFlagBotDefeat(
       { $set: { currentHP: FLAG_BOT_CONFIG.baseHP } }
     );
     
-    // Transfer flag to victor
+    // Add initial trail entry for victor
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 8 * 60 * 1000); // 8 minutes from now
+    
+    // Transfer flag to victor with initial trail
     await db.collection('flags').updateOne(
       {},
       {
@@ -299,7 +347,16 @@ export async function handleFlagBotDefeat(
             position: victor.currentPosition,
             claimedAt: new Date(),
           },
+          trail: [
+            {
+              x: victor.currentPosition.x,
+              y: victor.currentPosition.y,
+              timestamp: now,
+              expiresAt: expiresAt
+            }
+          ],
           lastTransfer: new Date(),
+          lastUpdate: now,
         },
         $push: {
           transferHistory: {
@@ -394,17 +451,37 @@ export async function shouldResetFlag(): Promise<boolean> {
 /**
  * Initialize flags collection with first flag bot
  * Called on first server startup if flags collection doesn't exist
+ * 
+ * CRITICAL: This function ensures only ONE flag exists in the system.
+ * It checks for existing flags/flag bots and only creates if none exist.
  */
 export async function initializeFlagSystem(): Promise<void> {
   try {
     const db = await getDatabase();
+    
+    // Check if flags collection already has a document
     const flagDoc = await db.collection('flags').findOne({});
     
-    if (!flagDoc) {
-      console.log('🏴 Initializing flag system for first time...');
-      await createFlagBot();
-      console.log('✅ Flag system initialized');
+    if (flagDoc) {
+      // Flag system already initialized, do nothing
+      console.log('✅ Flag system already initialized');
+      return;
     }
+    
+    // Check if any flag bots already exist in players collection
+    const existingFlagBot = await db.collection('players').findOne({
+      username: { $regex: /^Flag-Bearer-/i }
+    });
+    
+    if (existingFlagBot) {
+      console.log('⚠️ Found orphaned flag bot without flag document - cleaning up');
+      await db.collection('players').deleteOne({ _id: existingFlagBot._id });
+    }
+    
+    // No flag exists - create the first flag bot
+    console.log('🏴 Initializing flag system for first time...');
+    await createFlagBot();
+    console.log('✅ Flag system initialized with single flag');
   } catch (error) {
     console.error('❌ Error initializing flag system:', error);
     throw new Error('Failed to initialize flag system');

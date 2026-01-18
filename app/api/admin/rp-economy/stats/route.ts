@@ -8,17 +8,31 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
 import { Player } from '@/types';
 import { getAuthenticatedUser } from '@/lib/authService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 /**
  * GET /api/admin/rp-economy/stats
  * Returns overall RP economy statistics
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/rp-economy/stats');
+  const endTimer = log.time('get-rp-economy-stats');
+
   try {
     // Verify admin authentication
     const adminUser = await getAuthenticatedUser();
     if (!adminUser?.isAdmin) {
-      return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED);
     }
 
     // Calculate economy stats
@@ -26,7 +40,7 @@ export async function GET(request: NextRequest) {
     const players = await playersCollection.find({}).toArray();
     
     const totalRP = players.reduce((sum: number, p: Player) => sum + (p.researchPoints || 0), 0);
-    const vipPlayers = players.filter((p: Player) => p.isVIP && p.vipExpiresAt && new Date(p.vipExpiresAt) > new Date()).length;
+    const vipPlayers = players.filter((p: Player) => p.vip && p.vipExpiration && new Date(p.vipExpiration) > new Date()).length;
     
     // Calculate total generated and spent from rpHistory
     let totalGenerated = 0;
@@ -72,6 +86,13 @@ export async function GET(request: NextRequest) {
     const averageBalance = Math.round(totalRP / players.length);
     const medianBalance = balances.length > 0 ? balances[Math.floor(balances.length / 2)] : 0;
 
+    log.info('RP economy stats retrieved', {
+      totalRP,
+      dailyGeneration,
+      activeEarners24h,
+      vipPlayers,
+    });
+
     return NextResponse.json({
       totalRP,
       totalGenerated,
@@ -84,7 +105,9 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Error fetching RP economy stats:', error);
-    return NextResponse.json({ error: 'Failed to fetch stats' }, { status: 500 });
+    log.error('Failed to fetch RP economy stats', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

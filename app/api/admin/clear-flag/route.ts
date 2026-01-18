@@ -1,9 +1,11 @@
 /**
  * 📅 Created: 2025-01-18
+ * 📅 Updated: 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * 🎯 OVERVIEW:
  * Clear Flag Admin Endpoint
  * 
  * POST /api/admin/clear-flag
+ * Rate Limited: 30 req/hour (admin bot management)
  * - Marks a specific anti-cheat flag as resolved
  * - Requires admin notes explaining resolution
  * - Records which admin cleared the flag and when
@@ -14,35 +16,37 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authService';
 import clientPromise from '@/lib/mongodb';
 import { ObjectId } from 'mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createValidationErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+import { ClearFlagSchema } from '@/lib/validation/schemas';
+import { ZodError } from 'zod';
 
-export async function POST(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.adminBot);
+
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminClearFlagAPI');
+  const endTimer = log.time('clear-flag');
+
   try {
     // Admin authentication check
     const user = await getAuthenticatedUser();
     if (!user || !user.rank || user.rank < 5) {
-      return NextResponse.json(
-        { success: false, error: 'Admin access required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin access required (rank 5+)',
+      });
     }
 
     const body = await request.json();
-    const { flagId, adminNotes } = body;
-
-    // Validation
-    if (!flagId) {
-      return NextResponse.json(
-        { success: false, error: 'Flag ID is required' },
-        { status: 400 }
-      );
-    }
-
-    if (!adminNotes || adminNotes.trim().length < 10) {
-      return NextResponse.json(
-        { success: false, error: 'Admin notes required (min 10 characters)' },
-        { status: 400 }
-      );
-    }
+    const validated = ClearFlagSchema.parse(body);
+    const { flagId, adminNotes } = validated;
 
     const client = await clientPromise;
     const db = client.db('game');
@@ -63,10 +67,10 @@ export async function POST(request: NextRequest) {
     );
 
     if (!result) {
-      return NextResponse.json(
-        { success: false, error: 'Flag not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_FLAG_NOT_FOUND, {
+        message: 'Flag not found',
+        flagId,
+      });
     }
 
     // Log admin action
@@ -80,6 +84,14 @@ export async function POST(request: NextRequest) {
       flagId: flagId,
       notes: adminNotes.trim(),
       timestamp: new Date()
+    });
+
+    log.info('Flag cleared successfully', {
+      flagId,
+      username: result.username,
+      flagType: result.flagType,
+      severity: result.severity,
+      adminUser: user.username,
     });
 
     return NextResponse.json({
@@ -97,16 +109,15 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Clear flag error:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to clear flag'
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Failed to clear flag', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * 📝 IMPLEMENTATION NOTES:

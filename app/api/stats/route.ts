@@ -11,6 +11,17 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 // ============================================================
 // GET HANDLER
@@ -28,7 +39,9 @@ import clientPromise from '@/lib/mongodb';
  * 
  * Note: Authentication handled by Next.js middleware
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('stats-get');
+  const endTimer = log.time('stats-get');
   try {
     // Authentication is handled by middleware - no need to check here
 
@@ -112,6 +125,11 @@ export async function GET(request: NextRequest) {
       totalTerritories: 0, // TODO: Implement territory tracking
     };
 
+    log.info('Statistics retrieved', { 
+      topPlayerCount: topPlayers.length, 
+      totalPlayers: gameStats.totalPlayers, 
+      sortBy 
+    });
     return NextResponse.json({
       success: true,
       topPlayers,
@@ -119,13 +137,12 @@ export async function GET(request: NextRequest) {
       sortBy,
     });
   } catch (error) {
-    console.error('❌ Stats API error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch statistics' },
-      { status: 500 }
-    );
+    log.error('Failed to fetch statistics', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

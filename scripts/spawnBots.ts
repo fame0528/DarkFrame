@@ -14,8 +14,8 @@
  * - Manual spawn: node scripts/spawnBots.ts --count 10 --zone 4
  */
 
-import { getDatabase } from '@/lib/mongodb';
-import { createBot, calculateZone } from '@/lib/botService';
+import { connectToDatabase, getDatabase } from '../lib/mongodb';
+import { createBotPlayer, calculateZone } from '../lib/botService';
 import { BOT_NESTS, getRandomPositionNearNest } from '@/lib/botNestService';
 import { shouldAttractToBeacon, incrementAttractedCount } from '@/lib/botMagnetService';
 import { getZoneSpawnPosition } from '@/lib/concentrationZoneService';
@@ -168,7 +168,7 @@ async function spawnBots(
       }
     }
     
-    const bot = await createBot(zone, null, Math.random() < 0.07); // 7% Beer Bases
+    const bot = await createBotPlayer(zone, null, Math.random() < 0.07); // 7% Beer Bases
     
     // Set position from concentration zone or nest
     if (position) {

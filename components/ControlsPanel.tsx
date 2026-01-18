@@ -1,20 +1,20 @@
 // ============================================================
 // FILE: ControlsPanel.tsx
 // CREATED: 2025-01-17
-// LAST MODIFIED: 2025-01-17
+// LAST MODIFIED: 2025-10-27
 // ============================================================
 // OVERVIEW:
 // Right sidebar controls panel component providing player position info,
-// movement controls, and gameplay instructions.
-// Displays current coordinates, terrain type, loading/error states,
-// and keyboard shortcut reference guide. Integrates design system components
-// (Panel, Badge, Button, Divider, Card).
+// movement controls, flag bearer status, and gameplay instructions.
+// Displays current coordinates, terrain type, flag bearer bonuses,
+// loading/error states, and keyboard shortcut reference guide.
+// Integrates design system components (Panel, Badge, Button, Divider, Card).
 // ============================================================
 
 'use client';
 
 import React from 'react';
-import { MapPin, Map } from 'lucide-react';
+import { MapPin, Map, Flag } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useGameContext } from '@/context/GameContext';
 import MovementControls from './MovementControls';
@@ -23,6 +23,15 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Divider } from '@/components/ui/Divider';
 import { Card } from '@/components/ui/Card';
+import type { FlagBearer } from '@/types';
+
+// ============================================================
+// COMPONENT PROPS
+// ============================================================
+
+interface ControlsPanelProps {
+  flagBearer?: FlagBearer | null;
+}
 
 // ============================================================
 // MAIN COMPONENT
@@ -33,15 +42,19 @@ import { Card } from '@/components/ui/Card';
  * 
  * Right sidebar providing:
  * - Current position display with coordinates and terrain
+ * - Flag bearer status and bonuses (when player holds flag)
  * - Loading and error state indicators
  * - Movement controls component integration
  * - Keyboard shortcuts reference guide
  * - Logout functionality
  * - Design system integration for consistent styling
  */
-export default function ControlsPanel() {
+export default function ControlsPanel({ flagBearer }: ControlsPanelProps) {
   const { player, currentTile, isLoading, error } = useGameContext();
   const router = useRouter();
+
+  // Check if current player is the flag bearer
+  const isCurrentPlayerBearer = flagBearer && player && flagBearer.username === player.username;
 
   // ============================================================
   // MAIN RENDER
@@ -75,15 +88,45 @@ export default function ControlsPanel() {
           </div>
         </div>
       )}
-      
-      {/* Map View Button */}
-      <button
-        onClick={() => router.push('/map')}
-        className="w-full px-4 py-3 bg-gradient-to-r from-blue-500/20 to-cyan-500/20 hover:from-blue-500/30 hover:to-cyan-500/30 border-2 border-blue-500/40 hover:border-blue-400/60 rounded-lg transition-all shadow-[0_0_15px_rgba(59,130,246,0.3)] hover:shadow-[0_0_25px_rgba(59,130,246,0.5)] flex items-center justify-center gap-2 text-white font-semibold"
-      >
-        <Map className="w-5 h-5" />
-        🗺️ View Full Map
-      </button>
+
+      {/* Flag Bearer Status - Only show when player holds the flag */}
+      {isCurrentPlayerBearer && (
+        <div className="bg-gradient-to-br from-yellow-900/60 to-orange-900/60 backdrop-blur-sm border-2 border-yellow-500/50 rounded-lg overflow-hidden shadow-[0_0_30px_rgba(250,204,21,0.4)] animate-pulse">
+          {/* Banner Title */}
+          <div className="bg-gradient-to-r from-yellow-500/30 to-orange-500/30 border-b border-yellow-500/50 px-3 py-2">
+            <h3 className="text-sm font-bold text-yellow-100 font-display flex items-center gap-2">
+              <Flag className="w-4 h-4" />
+              FLAG BEARER
+            </h3>
+          </div>
+          {/* Content */}
+          <div className="p-3 space-y-2">
+            <div className="text-center">
+              <div className="text-4xl mb-2">🏴</div>
+              <div className="text-xs text-yellow-100 font-bold mb-3">
+                You hold the flag!
+              </div>
+            </div>
+            
+            {/* Bonuses */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-xs bg-green-900/40 border border-green-500/30 rounded px-2 py-1.5">
+                <span className="text-green-100">Harvest Bonus:</span>
+                <span className="text-green-300 font-bold">+100%</span>
+              </div>
+              <div className="flex items-center justify-between text-xs bg-blue-900/40 border border-blue-500/30 rounded px-2 py-1.5">
+                <span className="text-blue-100">XP Bonus:</span>
+                <span className="text-blue-300 font-bold">+100%</span>
+              </div>
+            </div>
+            
+            {/* Warning */}
+            <div className="text-[10px] text-yellow-200/70 text-center mt-2 italic">
+              ⚠️ You leave a visible trail that others can track
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Movement Controls */}
       <div className="bg-gray-900/60 backdrop-blur-sm border-2 border-cyan-500/30 rounded-lg overflow-hidden shadow-[0_0_20px_rgba(0,240,255,0.2)] p-3">
@@ -106,6 +149,7 @@ export default function ControlsPanel() {
 // IMPLEMENTATION NOTES:
 // ============================================================
 // - Position display: Shows current (x, y) coordinates with terrain type
+// - Flag bearer status: Shows when player holds flag with +100% bonuses
 // - Loading state: Animated spinner with blue theme
 // - Error state: Red alert card with error message
 // - Movement controls: Integrated MovementControls component
@@ -113,11 +157,12 @@ export default function ControlsPanel() {
 // - Logout: Calls /api/auth/logout, clears context, redirects to login
 // - Design system integration: Panel, Badge, Button, Card, Divider
 // - Toast notifications for logout success/error
-// - Responsive layout with consistent spacing (space-y-6)
+// - Responsive layout with consistent spacing (space-y-3)
 // - All interactive elements use Button component with variants
 // - Keyboard shortcuts displayed in monospace font badges
 // - Loading/error states use Card component with themed borders
 // - Map wrap reminder in footer with icon
+// - Flag bearer panel uses yellow/orange theme with pulse animation
 // ============================================================
 // END OF FILE
 // ============================================================

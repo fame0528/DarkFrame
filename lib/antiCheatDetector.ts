@@ -99,8 +99,16 @@ export async function detectSpeedHack(
     const db = client.db('game');
     const activities = db.collection('playerActivity');
 
-    // Calculate distance moved
-    const distance = Math.abs(toPos.x - fromPos.x) + Math.abs(toPos.y - fromPos.y);
+      // Calculate distance moved (accounting for map wrapping on 1-150 grid)
+      const MAP_SIZE = 150;
+      const dx = Math.abs(toPos.x - fromPos.x);
+      const dy = Math.abs(toPos.y - fromPos.y);
+    
+      // For wrapping maps, shortest distance could be direct or wrapped
+      // Example: x=1 to x=150 is distance 1 (wrapping), not 149 (direct)
+      const wrappedDx = Math.min(dx, MAP_SIZE - dx);
+      const wrappedDy = Math.min(dy, MAP_SIZE - dy);
+      const distance = wrappedDx + wrappedDy;
 
     // Check for impossible single-move distance
     if (distance > THRESHOLDS.IMPOSSIBLE_DISTANCE) {

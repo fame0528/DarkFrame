@@ -18,6 +18,7 @@
 'use client';
 
 import React from 'react';
+import { formatNumber } from '@/utils/formatting';
 
 interface XPProgressBarProps {
   level: number;
@@ -46,9 +47,6 @@ export default function XPProgressBar({
     if (progressPercent >= 25) return 'bg-gradient-to-r from-cyan-400 to-cyan-500';
     return 'bg-gradient-to-r from-gray-400 to-gray-500';
   };
-  
-  // Format numbers with commas
-  const formatNumber = (num: number) => num.toLocaleString();
   
   if (compact) {
     return (

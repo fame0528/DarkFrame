@@ -225,11 +225,10 @@ export async function getPlayer(username: string): Promise<Player | null> {
     const player = await playersCollection.findOne({ username });
     
     if (player) {
-      // Calculate factory count from tiles collection
-      const tilesCollection = await getCollection('tiles');
-      const factoryCount = await tilesCollection.countDocuments({
-        terrain: 'Factory',
-        'factory.owner': username
+      // Calculate factory count from factories collection
+      const factoriesCollection = await getCollection('factories');
+      const factoryCount = await factoriesCollection.countDocuments({
+        owner: username
       });
       
       // Add factory count to player object

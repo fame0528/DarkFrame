@@ -5,8 +5,18 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 import { getAchievementProgress, getUnlockedPrestigeUnits } from '@/lib/achievementService';
-import { logger } from '@/lib/logger';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET /api/achievements/progress?username=player
@@ -30,29 +40,33 @@ import { logger } from '@/lib/logger';
  *   }
  * }
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AchievementProgressAPI');
+  const endTimer = log.time('get-achievement-progress');
+  
   try {
     const searchParams = request.nextUrl.searchParams;
     const username = searchParams.get('username');
 
     if (!username) {
-      return NextResponse.json(
-        { success: false, error: 'Username is required' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: 'Username is required',
+      });
     }
 
     const progress = await getAchievementProgress(username);
 
     if (!progress) {
-      return NextResponse.json(
-        { success: false, error: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.RESOURCE_NOT_FOUND, {
+        message: 'Player not found',
+        context: { username },
+      });
     }
 
     // Get unlocked prestige units
     const unlockedPrestigeUnits = await getUnlockedPrestigeUnits(username);
+
+    log.info('Achievement progress retrieved', { username, totalUnlocked: progress.totalUnlocked });
 
     return NextResponse.json({
       success: true,
@@ -63,17 +77,12 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (error) {
-    logger.error('Error getting achievement progress', error instanceof Error ? error : new Error(String(error)));
-    return NextResponse.json(
-      {
-        success: false,
-        error: 'Failed to get achievement progress',
-        details: error instanceof Error ? error.message : 'Unknown error'
-      },
-      { status: 500 }
-    );
+    log.error('Error getting achievement progress', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

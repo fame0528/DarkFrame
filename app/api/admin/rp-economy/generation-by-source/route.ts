@@ -7,17 +7,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
 import { getAuthenticatedUser } from '@/lib/authService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 /**
  * GET /api/admin/rp-economy/generation-by-source
  * Returns RP generation breakdown by source type
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/rp-economy/generation-by-source');
+  const endTimer = log.time('get-generation-by-source');
+
   try {
     // Verify admin authentication
     const adminUser = await getAuthenticatedUser();
     if (!adminUser?.isAdmin) {
-      return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED);
     }
 
     const searchParams = request.nextUrl.searchParams;
@@ -73,10 +87,18 @@ export async function GET(request: NextRequest) {
       percentOfTotal: totalGeneration > 0 ? (item.totalRP / totalGeneration) * 100 : 0
     }));
 
+    log.info('RP generation by source retrieved', {
+      sourceCount: sources.length,
+      totalGeneration,
+      period,
+    });
+
     return NextResponse.json({ sources });
 
   } catch (error) {
-    console.error('Error fetching generation by source:', error);
-    return NextResponse.json({ error: 'Failed to fetch generation data' }, { status: 500 });
+    log.error('Failed to fetch generation by source', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

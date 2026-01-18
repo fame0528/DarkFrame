@@ -86,14 +86,30 @@ export function generateCaveItem(): InventoryItem | null {
   const isTradeableItem = Math.random() < GAME_CONSTANTS.HARVEST.TRADEABLE_ITEM_RATE;
   
   if (isTradeableItem) {
-    // Generate tradeable item (for future trading system)
+    // Generate tradeable item with rarity (affects shrine duration)
+    // Rarity distribution: 60% Common, 25% Uncommon, 10% Rare, 4% Epic, 1% Legendary
+    const rarityRoll = Math.random();
+    let rarity: ItemRarity;
+    
+    if (rarityRoll < 0.60) {
+      rarity = ItemRarity.Common;
+    } else if (rarityRoll < 0.85) {
+      rarity = ItemRarity.Uncommon;
+    } else if (rarityRoll < 0.95) {
+      rarity = ItemRarity.Rare;
+    } else if (rarityRoll < 0.99) {
+      rarity = ItemRarity.Epic;
+    } else {
+      rarity = ItemRarity.Legendary;
+    }
+    
     return {
       id: generateId(),
       type: ItemType.TradeableItem,
-      name: 'Tradeable Item',
-      description: 'A valuable item that can be traded at the Boost Station',
-      rarity: ItemRarity.Common, // Rarity doesn't matter for tradeables (all equal value)
-      bonusPercent: 0, // No bonus for tradeable items
+      name: `${rarity} Tradeable Item`,
+      description: 'A valuable item that can be used at the Shrine for gathering boosts',
+      rarity,
+      bonusPercent: 0, // No passive bonus for tradeable items
       foundAt: { x: 0, y: 0 }, // Will be filled in by caller
       foundDate: new Date()
     };
@@ -614,6 +630,103 @@ export async function harvestForestTile(
   }
 }
 
+/**
+ * Create guaranteed tutorial Universal Digger
+ * 
+ * TUTORIAL-ONLY: Creates a fixed 5% Universal Digger for tutorial reward
+ * This bypasses RNG and diminishing returns to ensure new players get the exact
+ * boost promised in the tutorial.
+ * 
+ * @returns Tutorial Universal Digger with fixed 5% bonus
+ */
+export function createTutorialDigger(): InventoryItem {
+  return {
+    id: generateId(),
+    type: ItemType.UniversalDigger,
+    name: 'Tutorial Universal Digger',
+    description: 'A special training digger that permanently increases all gathering efficiency by 5%',
+    rarity: ItemRarity.Rare,
+    bonusPercent: 5.0, // Fixed 5% bonus (not subject to diminishing returns)
+    foundAt: { x: 0, y: 0 }, // Tutorial location
+    foundDate: new Date()
+  };
+}
+
+/**
+ * Award tutorial digger to player with full database updates
+ * 
+ * TUTORIAL-ONLY: Awards guaranteed 5% Universal Digger during tutorial
+ * Updates ALL related fields:
+ * - Adds digger to player.inventory.items
+ * - Increments player.inventory.metalDiggerCount
+ * - Increments player.inventory.energyDiggerCount
+ * - Adds 5% to player.gatheringBonus.metalBonus
+ * - Adds 5% to player.gatheringBonus.energyBonus
+ * 
+ * @param username - Player username (not _id)
+ * @returns Result with success status, message, and digger item
+ */
+export async function awardTutorialDiggerToPlayer(
+  username: string
+): Promise<{ success: boolean; message: string; digger?: InventoryItem }> {
+  try {
+    // Get player
+    const playersCollection = await getCollection('players');
+    const player = await playersCollection.findOne({ username });
+    
+    if (!player) {
+      return { 
+        success: false, 
+        message: 'Player not found' 
+      };
+    }
+    
+    // Check inventory capacity
+    if (player.inventory.items.length >= player.inventory.capacity) {
+      return {
+        success: false,
+        message: 'Inventory is full! Cannot receive tutorial digger.'
+      };
+    }
+    
+    // Create tutorial digger with fixed 5% bonus
+    const digger = createTutorialDigger();
+    
+    // Update player with ALL digger-related fields
+    await playersCollection.updateOne(
+      { username },
+      {
+        $push: {
+          'inventory.items': digger as any
+        },
+        $inc: {
+          // Universal digger increments BOTH counts
+          'inventory.metalDiggerCount': 1,
+          'inventory.energyDiggerCount': 1,
+          // Add 5% to BOTH bonuses
+          'gatheringBonus.metalBonus': 5.0,
+          'gatheringBonus.energyBonus': 5.0
+        }
+      } as any
+    );
+    
+    console.log(`🎓 Tutorial digger awarded to ${username}: +5% metal & energy gathering`);
+    
+    return {
+      success: true,
+      message: 'Tutorial Universal Digger awarded! Your gathering efficiency increased by 5%!',
+      digger
+    };
+    
+  } catch (error) {
+    console.error('❌ Error awarding tutorial digger:', error);
+    return {
+      success: false,
+      message: 'An error occurred while awarding the tutorial digger'
+    };
+  }
+}
+
 // ============================================================
 // IMPLEMENTATION NOTES:
 // ============================================================
@@ -624,6 +737,7 @@ export async function harvestForestTile(
 // - Universal diggers boost BOTH metal and energy
 // - Inventory capacity enforced (default 2000 items)
 // - Cave tiles follow same reset system as resource tiles
+// - Tutorial digger: Fixed 5% bonus, not subject to diminishing returns
 // ============================================================
 // END OF FILE
 // ============================================================

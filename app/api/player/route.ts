@@ -13,6 +13,17 @@ import { ApiResponse, ApiError } from '@/types';
 import { calculateBalanceEffects } from '@/lib/balanceService';
 import { getXPProgress } from '@/lib/xpService';
 import { logger } from '@/lib/logger';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET /api/player?username=Commander42
@@ -27,7 +38,9 @@ import { logger } from '@/lib/logger';
  * }
  * ```
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('player-get');
+  const endTimer = log.time('player-get');
   try {
     // Get username from query parameters
     const { searchParams } = new URL(request.url);
@@ -35,22 +48,14 @@ export async function GET(request: NextRequest) {
     
     // Validate request
     if (!username) {
-      const errorResponse: ApiError = {
-        success: false,
-        error: 'Username is required'
-      };
-      return NextResponse.json(errorResponse, { status: 400 });
+      return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'Username parameter is required');
     }
     
     // Get player
     const player = await getPlayer(username);
     
     if (!player) {
-      const errorResponse: ApiError = {
-        success: false,
-        error: 'Player not found'
-      };
-      return NextResponse.json(errorResponse, { status: 404 });
+      return createErrorResponse(ErrorCode.RESOURCE_NOT_FOUND, 'Player not found');
     }
     
     // Calculate balance effects based on current STR/DEF
@@ -75,21 +80,16 @@ export async function GET(request: NextRequest) {
       data: playerWithBalance
     };
     
+    log.info('Player data retrieved', { username, level: player.level, effectivePower: balanceEffects.effectivePower });
     return NextResponse.json(successResponse);
     
   } catch (error) {
-    logger.error('Player fetch error', error instanceof Error ? error : new Error(String(error)));
-    
-    const errorMessage = error instanceof Error ? error.message : 'Failed to fetch player';
-    
-    const errorResponse: ApiError = {
-      success: false,
-      error: errorMessage
-    };
-    
-    return NextResponse.json(errorResponse, { status: 500 });
+    log.error('Failed to fetch player', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // END OF FILE

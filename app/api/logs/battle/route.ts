@@ -18,10 +18,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/authMiddleware';
 import { 
-  queryBattleLogs, 
-  getBattleById, 
-  getPlayerBattleLogs,
-  getBattlesAtLocation 
+  queryBattleLogs
 } from '@/lib/battleLogService';
 import { BattleType, BattleOutcome } from '@/types/activityLog.types';
 

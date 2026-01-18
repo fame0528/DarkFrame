@@ -205,16 +205,9 @@ export const DEFAULT_HOTKEYS: HotkeyConfig[] = [
   // Auto-Farm
   {
     action: HotkeyAction.AUTO_FARM_TOGGLE,
-    key: 'r',
+    key: 'f',
     displayName: 'Auto-Farm Toggle',
     description: 'Start/pause/resume auto-farming',
-    category: HotkeyCategory.AUTO_FARM,
-  },
-  {
-    action: HotkeyAction.AUTO_FARM_STOP,
-    key: 'r',
-    displayName: 'Stop Auto-Farm',
-    description: 'Stop auto-farming completely',
     category: HotkeyCategory.AUTO_FARM,
     requiresShift: true,
   },

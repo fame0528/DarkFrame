@@ -13,6 +13,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { initializeFlagSystem } from '@/lib/flagBotService';
+import { 
+  withRequestLogging, 
+  createRouteLogger, 
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS 
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.FLAG_INIT);
 
 /**
  * POST /api/flag/init
@@ -21,16 +29,23 @@ import { initializeFlagSystem } from '@/lib/flagBotService';
  * 
  * @returns Success message
  */
-export async function POST(request: NextRequest): Promise<NextResponse> {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest): Promise<NextResponse> => {
+  const log = createRouteLogger('flag-init');
+  const endTimer = log.time('flag-init');
+  
   try {
     await initializeFlagSystem();
+    
+    endTimer();
     
     return NextResponse.json({
       success: true,
       message: 'Flag system initialized successfully'
     });
   } catch (error) {
-    console.error('❌ Error initializing flag system:', error);
+    log.error('Error initializing flag system:', error instanceof Error ? error : new Error(String(error)));
+    endTimer();
+    
     return NextResponse.json(
       {
         success: false,
@@ -39,4 +54,4 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       { status: 500 }
     );
   }
-}
+}));

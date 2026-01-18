@@ -65,6 +65,10 @@ export type BankType = 'metal' | 'energy' | 'exchange';
  * @property baseOwner - Username of the player who owns the base (if occupiedByBase is true)
  * @property lastHarvestedBy - Array tracking which players have harvested this tile in current reset period
  * @property bankType - Bank type if terrain is Bank (Phase 3+)
+ * @property hasFlagBearer - Whether the Flag Bearer is currently on this tile
+ * @property hasTrail - Whether this tile has Flag Bearer's particle trail (8-minute lingering effect)
+ * @property trailTimestamp - When the trail was left on this tile (for fade calculations)
+ * @property trailExpiresAt - When the trail will expire from this tile
  */
 export interface Tile {
   x: number;
@@ -75,6 +79,10 @@ export interface Tile {
   baseGreeting?: string;
   lastHarvestedBy?: HarvestRecord[];
   bankType?: BankType;
+  hasFlagBearer?: boolean;
+  hasTrail?: boolean;
+  trailTimestamp?: Date;
+  trailExpiresAt?: Date;
 }
 
 /**
@@ -299,7 +307,8 @@ export enum BotSpecialization {
   Fortress = 'fortress',      // 20% - High defense, low resources, stationary
   Raider = 'raider',         // 25% - Aggressive, mobile, attacks frequently
   Ghost = 'ghost',           // 15% - Teleports randomly, high resources
-  Balanced = 'balanced'      // 15% - Standard stats, moderate movement
+  Balanced = 'balanced',     // 15% - Standard stats, moderate movement
+  Boss = 'boss'              // 1% - Elite enemy: 200K+ defense, 4M+ resources (NEW: Phase 7)
 }
 
 /**
@@ -405,20 +414,46 @@ export interface Player {
   baseGreeting?: string; // Custom base greeting message (max 500 chars)
   battleStats?: BattleStatistics; // Combat statistics for profile display
   isBot?: boolean; // Bot player flag (excluded from leaderboards)
+  isSpecialBase?: boolean; // Beer Base flag (top-level for easy querying, also in botConfig)
   botConfig?: BotConfig; // Bot-specific configuration (only present if isBot=true)
   clanId?: string; // ID of clan player belongs to (Phase 5-8)
   clanName?: string; // Name of player's clan (denormalized for quick access)
   clanRole?: string; // Player's role in clan (LEADER, CO_LEADER, OFFICER, MEMBER, etc.)
   clanLevel?: number; // Clan's current level (denormalized for quick access)
   isAdmin?: boolean; // Admin access flag (grants access to /admin panel)
-  isVIP?: boolean; // VIP subscription status (premium features: 2x auto-farm speed, etc.)
-  vipExpiresAt?: Date; // VIP subscription expiration date
+  vip?: boolean; // VIP subscription status (premium features: 2x auto-farm speed, etc.)
+  vipExpiration?: Date; // VIP subscription expiration date
+  vipTier?: string; // VIP tier (WEEKLY, MONTHLY, QUARTERLY, BIANNUAL, YEARLY)
+  stripeCustomerId?: string; // Stripe customer ID for subscription management
+  stripeSubscriptionId?: string; // Stripe subscription ID for tracking
+  vipLastUpdated?: Date; // Last time VIP status was updated
   lastLoginDate?: Date; // Last time player logged in (for daily reward tracking)
   loginStreak?: number; // Consecutive days logged in (for streak bonuses)
   lastStreakReward?: Date; // Last time daily login reward was claimed
   currentHP?: number; // Current HP for flag bearer defense (defaults to maxHP)
   maxHP?: number; // Maximum HP for flag bearer defense (defaults to 1000)
   lastFlagAttack?: Date; // Last time player attacked flag bearer (60s cooldown)
+  referralCode?: string; // Unique referral code (e.g., "DF-A7K9X2M5")
+  referralLink?: string; // Full referral URL
+  referredBy?: string | null; // Referral code of player who referred them
+  referredByUsername?: string | null; // Username of referrer
+  referralValidated?: boolean; // Whether this player's referral validated (if they were referred)
+  referralValidatedAt?: Date | null; // When validation occurred
+  totalReferrals?: number; // Count of validated referrals (people they referred)
+  pendingReferrals?: number; // Count awaiting 7-day validation
+  referralRewardsEarned?: {
+    metal: number;
+    energy: number;
+    rp: number;
+    xp: number;
+    vipDays: number;
+  };
+  referralTitles?: string[]; // Earned titles from referrals
+  referralBadges?: string[]; // Earned badges from referrals
+  referralMultiplier?: number; // Admin bonus multiplier (default 1.0)
+  lastReferralValidated?: Date | null; // Last time one of their referrals validated
+  referralMilestonesReached?: number[]; // Milestones achieved (e.g., [5, 10, 25])
+  signupIP?: string; // IP address used during signup (for abuse detection)
   createdAt?: Date;
 }
 
@@ -486,12 +521,12 @@ export interface BankStorage {
 /**
  * Shrine boost tier types
  */
-export type ShrineBoostTier = 'speed' | 'heart' | 'diamond' | 'club';
+export type ShrineBoostTier = 'spade' | 'heart' | 'diamond' | 'club';
 
 /**
  * Active shrine boost for resource gathering yield
  * 
- * @property tier - Boost tier (speed/heart/diamond/club)
+ * @property tier - Boost tier (spade/heart/diamond/club)
  * @property expiresAt - When the boost expires
  * @property yieldBonus - Resource yield bonus (0.25 = +25%)
  */
@@ -836,6 +871,7 @@ export interface Factory {
   usedSlots: number; // Slots consumed by built units
   productionRate: number; // Units per hour (display only)
   lastSlotRegen: Date; // Last time slots were regenerated
+  lastResourceGeneration?: Date; // Last time passive income was collected (NEW: Phase 5)
   lastAttackedBy?: string | null;
   lastAttackTime?: Date | null;
 }
@@ -1106,7 +1142,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier2,
     metalCost: 1200,
     energyCost: 600,
-    slotCost: 2,
+    slotCost: 3,
     strength: 30,
     defense: 0,
     levelRequired: 5,
@@ -1118,7 +1154,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier2,
     metalCost: 1600,
     energyCost: 800,
-    slotCost: 2,
+    slotCost: 3,
     strength: 40,
     defense: 0,
     levelRequired: 5,
@@ -1130,7 +1166,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier2,
     metalCost: 2000,
     energyCost: 1000,
-    slotCost: 2,
+    slotCost: 3,
     strength: 50,
     defense: 0,
     levelRequired: 5,
@@ -1142,7 +1178,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier2,
     metalCost: 2400,
     energyCost: 1200,
-    slotCost: 2,
+    slotCost: 3,
     strength: 60,
     defense: 0,
     levelRequired: 5,
@@ -1156,7 +1192,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier2,
     metalCost: 1200,
     energyCost: 600,
-    slotCost: 2,
+    slotCost: 3,
     strength: 0,
     defense: 30,
     levelRequired: 5,
@@ -1168,7 +1204,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier2,
     metalCost: 1600,
     energyCost: 800,
-    slotCost: 2,
+    slotCost: 3,
     strength: 0,
     defense: 40,
     levelRequired: 5,
@@ -1180,7 +1216,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier2,
     metalCost: 2000,
     energyCost: 1000,
-    slotCost: 2,
+    slotCost: 3,
     strength: 0,
     defense: 50,
     levelRequired: 5,
@@ -1192,7 +1228,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier2,
     metalCost: 2400,
     energyCost: 1200,
-    slotCost: 2,
+    slotCost: 3,
     strength: 0,
     defense: 60,
     levelRequired: 5,
@@ -1207,7 +1243,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier3,
     metalCost: 3600,
     energyCost: 1800,
-    slotCost: 3,
+    slotCost: 7,
     strength: 90,
     defense: 0,
     levelRequired: 10,
@@ -1219,7 +1255,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier3,
     metalCost: 4200,
     energyCost: 2100,
-    slotCost: 3,
+    slotCost: 7,
     strength: 105,
     defense: 0,
     levelRequired: 10,
@@ -1231,7 +1267,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier3,
     metalCost: 4800,
     energyCost: 2400,
-    slotCost: 3,
+    slotCost: 7,
     strength: 120,
     defense: 0,
     levelRequired: 10,
@@ -1243,7 +1279,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier3,
     metalCost: 5400,
     energyCost: 2700,
-    slotCost: 3,
+    slotCost: 7,
     strength: 135,
     defense: 0,
     levelRequired: 10,
@@ -1257,7 +1293,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier3,
     metalCost: 3600,
     energyCost: 1800,
-    slotCost: 3,
+    slotCost: 7,
     strength: 0,
     defense: 90,
     levelRequired: 10,
@@ -1269,7 +1305,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier3,
     metalCost: 4200,
     energyCost: 2100,
-    slotCost: 3,
+    slotCost: 7,
     strength: 0,
     defense: 105,
     levelRequired: 10,
@@ -1281,7 +1317,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier3,
     metalCost: 4800,
     energyCost: 2400,
-    slotCost: 3,
+    slotCost: 7,
     strength: 0,
     defense: 120,
     levelRequired: 10,
@@ -1293,7 +1329,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier3,
     metalCost: 5400,
     energyCost: 2700,
-    slotCost: 3,
+    slotCost: 7,
     strength: 0,
     defense: 135,
     levelRequired: 10,
@@ -1308,7 +1344,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier4,
     metalCost: 7200,
     energyCost: 3600,
-    slotCost: 4,
+    slotCost: 15,
     strength: 180,
     defense: 0,
     levelRequired: 20,
@@ -1320,7 +1356,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier4,
     metalCost: 8400,
     energyCost: 4200,
-    slotCost: 4,
+    slotCost: 15,
     strength: 210,
     defense: 0,
     levelRequired: 20,
@@ -1332,7 +1368,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier4,
     metalCost: 9600,
     energyCost: 4800,
-    slotCost: 4,
+    slotCost: 15,
     strength: 240,
     defense: 0,
     levelRequired: 20,
@@ -1344,7 +1380,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier4,
     metalCost: 10800,
     energyCost: 5400,
-    slotCost: 4,
+    slotCost: 15,
     strength: 270,
     defense: 0,
     levelRequired: 20,
@@ -1358,7 +1394,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier4,
     metalCost: 7200,
     energyCost: 3600,
-    slotCost: 4,
+    slotCost: 15,
     strength: 0,
     defense: 180,
     levelRequired: 20,
@@ -1370,7 +1406,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier4,
     metalCost: 8400,
     energyCost: 4200,
-    slotCost: 4,
+    slotCost: 15,
     strength: 0,
     defense: 210,
     levelRequired: 20,
@@ -1382,7 +1418,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier4,
     metalCost: 9600,
     energyCost: 4800,
-    slotCost: 4,
+    slotCost: 15,
     strength: 0,
     defense: 240,
     levelRequired: 20,
@@ -1394,7 +1430,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier4,
     metalCost: 10800,
     energyCost: 5400,
-    slotCost: 4,
+    slotCost: 15,
     strength: 0,
     defense: 270,
     levelRequired: 20,
@@ -1409,7 +1445,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier5,
     metalCost: 14400,
     energyCost: 7200,
-    slotCost: 5,
+    slotCost: 30,
     strength: 360,
     defense: 0,
     levelRequired: 30,
@@ -1421,7 +1457,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier5,
     metalCost: 16800,
     energyCost: 8400,
-    slotCost: 5,
+    slotCost: 30,
     strength: 420,
     defense: 0,
     levelRequired: 30,
@@ -1433,7 +1469,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier5,
     metalCost: 19200,
     energyCost: 9600,
-    slotCost: 5,
+    slotCost: 30,
     strength: 480,
     defense: 0,
     levelRequired: 30,
@@ -1445,7 +1481,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier5,
     metalCost: 21600,
     energyCost: 10800,
-    slotCost: 5,
+    slotCost: 30,
     strength: 540,
     defense: 0,
     levelRequired: 30,
@@ -1459,7 +1495,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier5,
     metalCost: 14400,
     energyCost: 7200,
-    slotCost: 5,
+    slotCost: 30,
     strength: 0,
     defense: 360,
     levelRequired: 30,
@@ -1471,7 +1507,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier5,
     metalCost: 16800,
     energyCost: 8400,
-    slotCost: 5,
+    slotCost: 30,
     strength: 0,
     defense: 420,
     levelRequired: 30,
@@ -1483,7 +1519,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier5,
     metalCost: 19200,
     energyCost: 9600,
-    slotCost: 5,
+    slotCost: 30,
     strength: 0,
     defense: 480,
     levelRequired: 30,
@@ -1495,7 +1531,7 @@ export const UNIT_CONFIGS: Record<UnitType, UnitConfig> = {
     tier: UnitTier.Tier5,
     metalCost: 21600,
     energyCost: 10800,
-    slotCost: 5,
+    slotCost: 30,
     strength: 0,
     defense: 540,
     levelRequired: 30,

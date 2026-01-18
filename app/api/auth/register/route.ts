@@ -1,56 +1,80 @@
 /**
  * @file app/api/auth/register/route.ts
  * @created 2025-10-16
+ * @updated 2025-10-24 (Phase 2: Production infrastructure - validation, errors, rate limiting)
  * @overview Registration endpoint with email/password authentication
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createPlayerWithAuth } from '@/lib/playerService';
 import { getTileAt } from '@/lib/movementService';
+import { hashPassword, generateToken } from '@/lib/authService';
+import { 
+  validateReferralCode,
+  createReferralRecord,
+  generateReferralCode,
+  generateReferralLink,
+  checkForAbuse
+} from '@/lib/referralService';
 import {
-  hashPassword,
-  generateToken,
-  isValidEmail,
-  isValidPassword,
-  isValidUsername
-} from '@/lib/authService';
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  RegisterSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
+import { getDatabase } from '@/lib/mongodb';
 
-export async function POST(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.register);
+
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AuthRegister');
+  const endTimer = log.time('registerProcess');
   try {
-    const { username, email, password } = await request.json();
+    // Parse and validate request body
+    const body = await request.json();
+    const validated = RegisterSchema.parse(body);
+    const { username, email, password } = validated;
+    const referralCode = body.referralCode || null; // Optional referral code
     
-    // Validate inputs
-    if (!username || !email || !password) {
-      return NextResponse.json(
-        { success: false, error: 'Username, email, and password are required' },
-        { status: 400 }
-      );
-    }
+    log.debug('Registration attempt', { username, email, hasReferralCode: !!referralCode });
     
-    // Validate username
-    const usernameValidation = isValidUsername(username);
-    if (!usernameValidation.valid) {
-      return NextResponse.json(
-        { success: false, error: usernameValidation.message },
-        { status: 400 }
-      );
-    }
+    // Get IP address for abuse detection
+    const ip = request.headers.get('x-forwarded-for') || 
+               request.headers.get('x-real-ip') || 
+               'unknown';
     
-    // Validate email
-    if (!isValidEmail(email)) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid email format' },
-        { status: 400 }
-      );
-    }
-    
-    // Validate password
-    const passwordValidation = isValidPassword(password);
-    if (!passwordValidation.valid) {
-      return NextResponse.json(
-        { success: false, error: passwordValidation.message },
-        { status: 400 }
-      );
+    // Validate referral code if provided
+    let referrerUsername: string | null = null;
+    if (referralCode) {
+      const codeValidation = await validateReferralCode(referralCode);
+      if (!codeValidation.valid) {
+        return NextResponse.json({
+          success: false,
+          error: `Invalid referral code: ${codeValidation.error}`
+        }, { status: 400 });
+      }
+      
+      // Check for abuse patterns
+      const abuseCheck = await checkForAbuse(email, ip, referralCode);
+      if (!abuseCheck.allowed) {
+        log.warn('Referral abuse detected', { email, ip, reason: abuseCheck.reason });
+        return NextResponse.json({
+          success: false,
+          error: abuseCheck.reason
+        }, { status: 403 });
+      }
+      
+      if (abuseCheck.riskLevel === 'medium' || abuseCheck.riskLevel === 'high') {
+        log.warn('Referral risk detected', { email, ip, flags: abuseCheck.flags, risk: abuseCheck.riskLevel });
+      }
+      
+      referrerUsername = codeValidation.referrerUsername || null;
     }
     
     // Hash password
@@ -58,6 +82,85 @@ export async function POST(request: NextRequest) {
     
     // Create player
     const player = await createPlayerWithAuth(username, email, hashedPassword);
+    
+    // Generate unique referral code for new player
+    const db = await getDatabase();
+    let newPlayerCode = generateReferralCode();
+    let attempts = 0;
+    while (attempts < 10) {
+      const existing = await db.collection('players').findOne({ referralCode: newPlayerCode });
+      if (!existing) break;
+      newPlayerCode = generateReferralCode();
+      attempts++;
+    }
+    
+    const newPlayerLink = generateReferralLink(newPlayerCode);
+    
+    // Track referral usage (welcome package awarded on tutorial completion)
+    if (referralCode) {
+      // Update new player with referral tracking (resources awarded on tutorial completion)
+      await db.collection('players').updateOne(
+        { username },
+        {
+          $set: {
+            referralCode: newPlayerCode,
+            referralLink: newPlayerLink,
+            referredBy: referralCode,
+            referredByUsername: referrerUsername,
+            referralValidated: false,
+            signupIP: ip,
+            totalReferrals: 0,
+            pendingReferrals: 0,
+            referralRewardsEarned: {
+              metal: 0,
+              energy: 0,
+              rp: 0,
+              xp: 0,
+              vipDays: 0
+            },
+            referralTitles: [],
+            referralBadges: [],
+            referralMultiplier: 1.0,
+            referralMilestonesReached: []
+          }
+        }
+      );
+      
+      // Create referral record
+      await createReferralRecord(referralCode, player, ip);
+      
+      log.info('Referral code tracked - welcome package will be awarded on tutorial completion', { 
+        username,
+        referredBy: referrerUsername
+      });
+    } else {
+      // No referral code - just set up their referral code (starter package on tutorial completion)
+      await db.collection('players').updateOne(
+        { username },
+        {
+          $set: {
+            referralCode: newPlayerCode,
+            referralLink: newPlayerLink,
+            signupIP: ip,
+            totalReferrals: 0,
+            pendingReferrals: 0,
+            referralRewardsEarned: {
+              metal: 0,
+              energy: 0,
+              rp: 0,
+              xp: 0,
+              vipDays: 0
+            },
+            referralTitles: [],
+            referralBadges: [],
+            referralMultiplier: 1.0,
+            referralMilestonesReached: []
+          }
+        }
+      );
+    }
+    
+    log.info('Registration successful', { username, email, referredBy: referrerUsername });
     
     // Generate JWT token (new players are not admins by default)
     const token = generateToken(player.username, player.email, false, false);
@@ -68,8 +171,11 @@ export async function POST(request: NextRequest) {
       player.currentPosition.y
     );
     
+    // Get updated player data with welcome package
+    const updatedPlayer = await db.collection('players').findOne({ username });
+    
     // Remove password from response
-    const { password: _, ...playerWithoutPassword } = player;
+    const { password: _, ...playerWithoutPassword } = updatedPlayer || player;
     
     // Set httpOnly cookie
     const response = NextResponse.json({
@@ -77,7 +183,11 @@ export async function POST(request: NextRequest) {
       data: {
         player: playerWithoutPassword,
         currentTile,
-        token
+        token,
+        welcomePackagePending: referralCode ? 'FULL_WELCOME' : 'STARTER',
+        welcomePackageMessage: referralCode 
+          ? 'Complete the tutorial to claim your full Welcome Package (50k Metal + 50k Energy + Legendary Digger + VIP Trial)!'
+          : 'Complete the tutorial to claim your Starter Package (25k Metal + 25k Energy + Rare Digger + XP Boost)!'
       }
     }, { status: 201 });
     
@@ -97,21 +207,32 @@ export async function POST(request: NextRequest) {
       maxAge: 60 * 60 * 24 * 7 // 7 days
     });
     
-    console.log(`✅ Registration successful: ${player.username}`);
-    
     return response;
     
   } catch (error) {
-    console.error('❌ Registration error:', error);
+    log.error('Registration error', error as Error);
     
-    const errorMessage = error instanceof Error ? error.message : 'Registration failed';
+    // Handle validation errors
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
     
-    return NextResponse.json(
-      { success: false, error: errorMessage },
-      { status: 400 }
-    );
+    // Handle duplicate username/email (from MongoDB unique index)
+    if (error instanceof Error && error.message.includes('duplicate')) {
+      if (error.message.toLowerCase().includes('username')) {
+        return createErrorResponse(ErrorCode.AUTH_USERNAME_ALREADY_EXISTS);
+      }
+      if (error.message.toLowerCase().includes('email')) {
+        return createErrorResponse(ErrorCode.AUTH_EMAIL_ALREADY_EXISTS);
+      }
+    }
+    
+    // Handle all other errors
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // END OF FILE

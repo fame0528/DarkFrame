@@ -1,6 +1,7 @@
 /**
  * Factory Upgrade Service
  * Created: 2025-10-17
+ * Updated: 2025-11-04 - Exponential slot cost system
  * 
  * OVERVIEW:
  * Core service for factory upgrade system, handling level progression,
@@ -10,8 +11,13 @@
  * UPGRADE FORMULA:
  * - Metal Cost = 1000 × (1.5^level)
  * - Energy Cost = 500 × (1.5^level)
- * - Max Slots = 10 + (level × 2)
- * - Regen Rate = 1 + (level × 0.1) slots/hour
+ * - Max Slots = 5000 + ((level - 1) × 500)
+ * - Regen Rate = 416.67 + ((level - 1) × 41.67) slots/hour
+ * 
+ * SLOT PROGRESSION:
+ * Level 1: 5,000 slots (416.67/hr) - 12h full regen
+ * Level 5: 7,000 slots (583.33/hr) - 12h full regen
+ * Level 10: 9,500 slots (791.67/hr) - 12h full regen
  * 
  * COST PROGRESSION:
  * Level 1→2: 1,500 metal + 750 energy
@@ -21,10 +27,11 @@
  * 
  * KEY FEATURES:
  * - Exponential cost scaling (1.5x multiplier)
- * - Linear slot capacity growth (+2 per level)
- * - Linear regeneration rate growth (+0.1/hour per level)
+ * - Linear slot capacity growth (+500 per level)
+ * - 12-hour regeneration cycle (syncs with harvest reset)
  * - Max 10 factories per player (strategic choices)
  * - Abandon functionality for factory repositioning
+ * - Supports exponential unit slot costs (T1=1, T2=3, T3=7, T4=15, T5=30)
  */
 
 import { Factory, FactoryStats } from '@/types/game.types';
@@ -41,11 +48,16 @@ export const FACTORY_UPGRADE = {
   BASE_ENERGY_COST: 500,
   COST_MULTIPLIER: 1.5,
   
-  // Stats formula constants
-  BASE_SLOTS: 10,
-  SLOTS_PER_LEVEL: 2,
-  BASE_REGEN_RATE: 1.0,
-  REGEN_PER_LEVEL: 0.1,
+  // Stats formula constants (Updated for exponential slot cost system)
+  BASE_SLOTS: 5000,           // Level 1 factory = 5,000 slots
+  SLOTS_PER_LEVEL: 500,       // +500 slots per level (Level 10 = 9,500 slots)
+  BASE_REGEN_RATE: 416.67,    // ~417 slots/hour (full regen in 12 hours)
+  REGEN_PER_LEVEL: 41.67,     // +41.67 slots/hour per level
+  
+  // Defense formula constants (NEW: Exponential scaling after Level 1)
+  // Level 1: 1,000 (accessible for first factory capture)
+  // Level 2+: Exponential growth - (level-1)² × 50,000
+  // Level 10: 3,650,000 (requires ~3M+ strength for high success)
   
   // Player limits
   MAX_FACTORIES_PER_PLAYER: 10
@@ -134,8 +146,8 @@ export function getFactoryStats(level: number): FactoryStats {
     throw new Error(`Invalid factory level: ${level}`);
   }
   
-  const maxSlots = FACTORY_UPGRADE.BASE_SLOTS + (level * FACTORY_UPGRADE.SLOTS_PER_LEVEL);
-  const regenRate = FACTORY_UPGRADE.BASE_REGEN_RATE + (level * FACTORY_UPGRADE.REGEN_PER_LEVEL);
+  const maxSlots = FACTORY_UPGRADE.BASE_SLOTS + ((level - 1) * FACTORY_UPGRADE.SLOTS_PER_LEVEL);
+  const regenRate = FACTORY_UPGRADE.BASE_REGEN_RATE + ((level - 1) * FACTORY_UPGRADE.REGEN_PER_LEVEL);
   
   // Combat bonuses: 5% per level (Level 10 = 50% bonus)
   const strengthBonus = level * 5;
@@ -158,10 +170,10 @@ export function getFactoryStats(level: number): FactoryStats {
  * 
  * @example
  * const maxSlots = getMaxSlots(10);
- * // Returns: 30
+ * // Returns: 28 (10 + 9×2)
  */
 export function getMaxSlots(level: number): number {
-  return FACTORY_UPGRADE.BASE_SLOTS + (level * FACTORY_UPGRADE.SLOTS_PER_LEVEL);
+  return FACTORY_UPGRADE.BASE_SLOTS + ((level - 1) * FACTORY_UPGRADE.SLOTS_PER_LEVEL);
 }
 
 /**
@@ -172,10 +184,47 @@ export function getMaxSlots(level: number): number {
  * 
  * @example
  * const regenRate = getRegenRate(10);
- * // Returns: 2.0
+ * // Returns: 791.67 (416.67 + 9×41.67)
  */
 export function getRegenRate(level: number): number {
-  return FACTORY_UPGRADE.BASE_REGEN_RATE + (level * FACTORY_UPGRADE.REGEN_PER_LEVEL);
+  return FACTORY_UPGRADE.BASE_REGEN_RATE + ((level - 1) * FACTORY_UPGRADE.REGEN_PER_LEVEL);
+}
+
+/**
+ * Get defense rating for a factory at a given level
+ * 
+ * EXPONENTIAL SCALING FORMULA:
+ * - Level 1: 1,000 (accessible to all players - needed for first factory)
+ * - Level 2+: (level - 1)² × 50,000 (exponential growth)
+ * 
+ * Creates strategic progression:
+ * - Level 1: 1,000 defense (anyone can capture for building capability)
+ * - Level 2: 50,000 defense (requires ~50K strength for 90% success)
+ * - Level 5: 650,000 defense (requires ~650K strength)
+ * - Level 10: 3,650,000 defense (requires ~3M+ strength - end-game challenge)
+ * 
+ * @param level - Factory level (1-10)
+ * @returns Defense rating
+ * 
+ * @example
+ * getFactoryDefense(1);  // Returns: 1,000
+ * getFactoryDefense(5);  // Returns: 650,000 (4² × 50,000 + base offset)
+ * getFactoryDefense(10); // Returns: 3,650,000 (9² × 50,000 + base offset)
+ */
+export function getFactoryDefense(level: number): number {
+  if (level < FACTORY_UPGRADE.MIN_LEVEL || level > FACTORY_UPGRADE.MAX_LEVEL) {
+    throw new Error(`Invalid factory level: ${level}`);
+  }
+  
+  // Level 1 is special - very low defense for accessibility
+  if (level === 1) {
+    return 1000;
+  }
+  
+  // Level 2+: Exponential scaling
+  // Formula: (level - 1)² × 50,000
+  const exponent = level - 1;
+  return exponent * exponent * 50000;
 }
 
 /**

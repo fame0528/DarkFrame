@@ -1,18 +1,21 @@
 /**
- * @fileoverview Clan Territory Capture API Route
- * @module app/api/clan/warfare/capture/route
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/warfare/capture/route.ts
+ * @created 2025-10-18
+ * @updated 2025-01-23 (FID-20251023-001: Auth deduplication + JSDoc)
  * 
  * OVERVIEW:
  * POST endpoint for capturing enemy territory during an active war. Validates war status,
  * territory ownership, and permissions. Integrates with warfare service for capture logic
  * including success rate calculation based on defense bonuses.
  * 
- * Endpoint: POST /api/clan/warfare/capture
- * Body: { targetClanId: string, tileX: number, tileY: number }
+ * ROUTES:
+ * - POST /api/clan/warfare/capture - Attempt to capture enemy territory
  * 
- * Business Rules:
+ * AUTHENTICATION:
+ * - requireClanMembership() - Must be clan member
+ * - Permission check in service layer (Officer, Co-Leader, Leader only)
+ * 
+ * BUSINESS RULES:
  * - Active war must exist between attacker and defender clans
  * - Territory must be owned by target clan
  * - Capture success rate: 70% base, reduced by defense bonuses
@@ -20,68 +23,57 @@
  * - Minimum 30% capture rate guaranteed
  * - Permissions: Officer, Co-Leader, or Leader only
  * - Failed captures are logged but don't transfer territory
- * 
- * Response:
- * - Success: { success: true, territory, defenseBonus, message }
- * - Failed capture: { success: false, defenseBonus, message }
- * - Error: Specific validation error messages
- * 
- * Dependencies:
- * - JWT authentication (cookie-based)
- * - Warfare service for capture logic
- * - MongoDB for player and clan data
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import clientPromise from '@/lib/mongodb';
+import { getClientAndDatabase } from '@/lib/mongodb';
+import { requireClanMembership } from '@/lib/authMiddleware';
 import { captureTerritory } from '@/lib/clanWarfareService';
-
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'your-secret-key-min-32-characters-long'
-);
 
 /**
  * POST /api/clan/warfare/capture
- * 
  * Attempt to capture enemy territory during active war
  * 
- * Request Body:
- * - targetClanId: string - MongoDB ObjectId of enemy clan
- * - tileX: number - X coordinate of territory to capture
- * - tileY: number - Y coordinate of territory to capture
+ * @param request - NextRequest with auth cookie and body data
+ * @returns NextResponse with capture result or error
  * 
- * Response:
- * - 200: { success: true/false, territory?, defenseBonus, message }
- * - 400: Validation errors (not in clan, no active war, territory not owned by target, invalid coords)
- * - 401: Authentication required
- * - 403: Insufficient permissions (not Officer/Co-Leader/Leader)
- * - 404: Player or clan not found
- * - 500: Server error
+ * @example
+ * POST /api/clan/warfare/capture
+ * Body: { targetClanId: "676a1b2c3d4e5f6a7b8c9d0e", tileX: 10, tileY: 15 }
+ * Response (success): {
+ *   success: true,
+ *   territory: { tileX: 10, tileY: 15, clanId: "..." },
+ *   defenseBonus: 20,
+ *   message: "Successfully captured territory (10, 15)!"
+ * }
  * 
- * @param request - Next.js request object
- * @returns JSON response with capture result
+ * @example
+ * POST /api/clan/warfare/capture
+ * Body: { targetClanId: "...", tileX: 10, tileY: 15 }
+ * Response (failed capture): {
+ *   success: false,
+ *   defenseBonus: 40,
+ *   message: "Failed to capture territory. Enemy defense bonus: 40%"
+ * }
+ * 
+ * @throws {400} Invalid coords, no active war, territory not owned by target
+ * @throws {401} Not authenticated
+ * @throws {403} Insufficient permissions (not Officer/Co-Leader/Leader)
+ * @throws {404} Player or clan not found
+ * @throws {500} Server error
  */
 export async function POST(request: NextRequest) {
   try {
-    // Authenticate user
-    const token = request.cookies.get('token')?.value;
+    const { db } = await getClientAndDatabase();
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    
+    const { auth, clanId } = result;
 
-    if (!token) {
-      return NextResponse.json(
-        { success: false, message: 'Authentication required' },
-        { status: 401 }
-      );
-    }
-
-    const verified = await jwtVerify(token, JWT_SECRET);
-    const username = verified.payload.username as string;
-
-    // Parse request body
+    // Parse and validate request body
     const body = await request.json();
     const { targetClanId, tileX, tileY } = body;
 
-    // Validate input
     if (!targetClanId || typeof targetClanId !== 'string') {
       return NextResponse.json(
         { success: false, message: 'Invalid targetClanId. Must be a string.' },
@@ -103,49 +95,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get player from database
-    const client = await clientPromise;
-    const db = client.db(process.env.MONGODB_DB || 'darkframe');
-    const playersCollection = db.collection('players');
-
-    const player = await playersCollection.findOne({ username });
-
-    if (!player) {
-      return NextResponse.json(
-        { success: false, message: 'Player not found' },
-        { status: 404 }
-      );
-    }
-
-    // Check if player is in a clan
-    if (!player.clanId) {
-      return NextResponse.json(
-        { success: false, message: 'You must be in a clan to capture territory' },
-        { status: 400 }
-      );
-    }
-
-    // Attempt territory capture via service
-    const result = await captureTerritory(
-      player.clanId,
+    // Attempt territory capture via service (handles permissions, war validation, success rate)
+    const captureResult = await captureTerritory(
+      clanId,
       targetClanId,
       tileX,
       tileY,
-      username // playerId is username
+      auth.username
     );
 
-    // Return result (success can be true or false)
+    // Return result (success can be true or false - both are 200 OK)
     return NextResponse.json({
-      success: result.success,
-      territory: result.territory,
-      defenseBonus: result.defenseBonus,
-      message: result.message,
+      success: captureResult.success,
+      territory: captureResult.territory,
+      defenseBonus: captureResult.defenseBonus,
+      message: captureResult.message,
     });
 
   } catch (error: any) {
     console.error('Error capturing territory:', error);
 
-    // Handle specific error messages from service
+    // Permission errors
     if (error.message.includes('permission') || error.message.includes('Officer')) {
       return NextResponse.json(
         { success: false, message: error.message },
@@ -153,6 +123,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Business rule violations
     if (
       error.message.includes('No active war') ||
       error.message.includes('not owned by target') ||
@@ -164,6 +135,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Not found errors
     if (error.message.includes('not found')) {
       return NextResponse.json(
         { success: false, message: error.message },

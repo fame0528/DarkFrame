@@ -11,6 +11,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
 import { Player } from '@/types';
+import { getAuthenticatedUser } from '@/lib/authMiddleware';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 /**
  * GET /api/admin/players
@@ -18,25 +30,20 @@ import { Player } from '@/types';
  * Get list of all players for admin panel
  * Requires level 10+
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/players');
+  const endTimer = log.time('get-players');
+
   try {
-    // Check admin access via cookie
-    const { getAuthenticatedUser } = await import('@/lib/authMiddleware');
     const user = await getAuthenticatedUser();
 
     if (!user) {
-      return NextResponse.json(
-        { success: false, error: 'Not authenticated' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED);
     }
 
     // Check admin access (isAdmin flag required)
     if (user.isAdmin !== true) {
-      return NextResponse.json(
-        { success: false, error: 'Access denied - Admin only' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED);
     }
 
     // Get all players with limited fields
@@ -67,19 +74,23 @@ export async function GET(request: NextRequest) {
       lastActive: p.createdAt ? new Date(p.createdAt).toISOString() : undefined
     }));
 
+    log.info('Player list retrieved', {
+      totalPlayers: playerList.length,
+      requestedBy: user.username,
+    });
+
     return NextResponse.json({
       success: true,
       data: playerList
     });
 
   } catch (error) {
-    console.error('❌ Error loading player list:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to load players' },
-      { status: 500 }
-    );
+    log.error('Failed to load player list', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // END OF FILE

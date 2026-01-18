@@ -10,6 +10,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getTileAt } from '@/lib/movementService';
 import { ApiResponse, ApiError } from '@/types';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET /api/tile?x=75&y=100
@@ -29,7 +40,9 @@ import { ApiResponse, ApiError } from '@/types';
  * }
  * ```
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('tile-get');
+  const endTimer = log.time('tile-get');
   try {
     // Get coordinates from query parameters
     const { searchParams } = new URL(request.url);
@@ -38,11 +51,7 @@ export async function GET(request: NextRequest) {
     
     // Validate request
     if (!xParam || !yParam) {
-      const errorResponse: ApiError = {
-        success: false,
-        error: 'Coordinates (x, y) are required'
-      };
-      return NextResponse.json(errorResponse, { status: 400 });
+      return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'Coordinates (x, y) are required');
     }
     
     const x = parseInt(xParam, 10);
@@ -50,22 +59,14 @@ export async function GET(request: NextRequest) {
     
     // Validate coordinate ranges
     if (isNaN(x) || isNaN(y) || x < 1 || x > 150 || y < 1 || y > 150) {
-      const errorResponse: ApiError = {
-        success: false,
-        error: 'Coordinates must be numbers between 1 and 150'
-      };
-      return NextResponse.json(errorResponse, { status: 400 });
+      return createErrorResponse(ErrorCode.VALIDATION_INVALID_FORMAT, 'Coordinates must be numbers between 1 and 150');
     }
     
     // Get tile
     const tile = await getTileAt(x, y);
     
     if (!tile) {
-      const errorResponse: ApiError = {
-        success: false,
-        error: 'Tile not found'
-      };
-      return NextResponse.json(errorResponse, { status: 404 });
+      return createErrorResponse(ErrorCode.RESOURCE_NOT_FOUND, 'Tile not found');
     }
     
     // If tile is occupied by a base, fetch the owner's username
@@ -85,9 +86,40 @@ export async function GET(request: NextRequest) {
           (tile as any).baseGreeting = baseOwner.baseGreeting || '';
         }
       } catch (error) {
-        console.error('❌ Error fetching base owner:', error);
+        log.error('Error fetching base owner', error instanceof Error ? error : new Error(String(error)));
         // Continue without base owner - non-critical
       }
+    }
+
+    // Check if Flag Bearer is on this tile or if tile has trail
+    try {
+      const { getDatabase } = await import('@/lib/mongodb');
+      const db = await getDatabase();
+      const flagDoc = await db.collection('flags').findOne({});
+      
+      if (flagDoc?.currentHolder) {
+        const holder = flagDoc.currentHolder;
+        
+        // Check if bearer is on this exact tile
+        if (holder.position.x === x && holder.position.y === y) {
+          (tile as any).hasFlagBearer = true;
+        }
+        
+        // Check if this tile has a trail entry (not expired)
+        const now = new Date();
+        const trailEntry = (flagDoc.trail || []).find((t: any) => 
+          t.x === x && t.y === y && new Date(t.expiresAt) > now
+        );
+        
+        if (trailEntry && !tile.hasFlagBearer) {
+          (tile as any).hasTrail = true;
+          (tile as any).trailTimestamp = trailEntry.timestamp;
+          (tile as any).trailExpiresAt = trailEntry.expiresAt;
+        }
+      }
+    } catch (error) {
+      log.error('Error checking flag bearer/trail', error instanceof Error ? error : new Error(String(error)));
+      // Continue without flag data - non-critical
     }
     
     // Build response
@@ -96,21 +128,16 @@ export async function GET(request: NextRequest) {
       data: tile
     };
     
+    log.info('Tile data retrieved', { x, y, terrain: tile.terrain, occupiedByBase: tile.occupiedByBase });
     return NextResponse.json(successResponse);
     
   } catch (error) {
-    console.error('❌ Tile fetch error:', error);
-    
-    const errorMessage = error instanceof Error ? error.message : 'Failed to fetch tile';
-    
-    const errorResponse: ApiError = {
-      success: false,
-      error: errorMessage
-    };
-    
-    return NextResponse.json(errorResponse, { status: 500 });
+    log.error('Failed to fetch tile', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // END OF FILE

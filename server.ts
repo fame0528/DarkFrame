@@ -42,7 +42,7 @@ const hostname = 'localhost';
 const port = parseInt(process.env.PORT || '3000', 10);
 
 // Initialize Next.js with typed configuration
-const app: NextServer = next({ dev, hostname, port });
+const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
 /**
@@ -101,6 +101,27 @@ async function startServer(): Promise<void> {
       console.log('[Server] ⚠️  Server will run without WebSocket support');
     }
 
+    // ============================================================
+    // RUN FACTORY SLOTS STARTUP MIGRATION (Idempotent)
+    // ============================================================
+    try {
+      console.log('[Server] 🔄 Running Factory Slots startup migration...');
+      const db = await connectToDatabase();
+      const { runFactorySlotsMigration } = await import('./lib/migrations/factorySlots');
+      const result = await runFactorySlotsMigration(db);
+      console.log('[Server] ✅ Factory Slots migration:', result.message, {
+        modified: result.modified,
+        matched: result.matched,
+        alreadyApplied: result.alreadyApplied,
+      });
+    } catch (err) {
+      console.error('[Server] ⚠️  Factory Slots migration failed:', {
+        error: err instanceof Error ? err.message : String(err),
+        stack: dev && err instanceof Error ? err.stack : undefined,
+      });
+      console.log('[Server] ⚠️  Continuing without blocking startup');
+    }
+
     // Initialize WMD Background Jobs
     try {
       console.log('[Server] 🔄 Starting WMD background jobs...');
@@ -139,6 +160,28 @@ async function startServer(): Promise<void> {
       console.log('[Server] ⚠️  Server will run without Flag Bot background job');
     }
 
+    // ============================================================
+    // START FACTORY SLOT REGENERATION BACKGROUND JOB
+    // ============================================================
+    try {
+      console.log('[Server] 🔄 Starting Factory Slot Regeneration background job...');
+      const db = await connectToDatabase();
+      const { startFactorySlotRegenJob } = await import('./lib/jobs/factorySlotRegeneration');
+      const factoryJobResult = await startFactorySlotRegenJob(db);
+      
+      if (factoryJobResult.success) {
+        console.log('[Server] ✅ Factory slot regen job started:', factoryJobResult.message);
+      } else {
+        console.error('[Server] ⚠️  Factory slot regen job failed to start:', factoryJobResult.message);
+      }
+    } catch (err) {
+      console.error('[Server] ⚠️  Factory slot regen job initialization failed:', {
+        error: err instanceof Error ? err.message : String(err),
+        stack: dev && err instanceof Error ? err.stack : undefined,
+      });
+      console.log('[Server] ⚠️  Server will run without Factory Slot Regeneration background job');
+    }
+
     // Start HTTP server
     await new Promise<void>((resolve, reject) => {
       httpServer.listen(port, hostname, () => resolve());
@@ -175,6 +218,15 @@ async function startServer(): Promise<void> {
         console.log('[Server] ✅ Flag bot job stopped:', flagStopResult.message);
       } catch (err) {
         console.error('[Server] ⚠️  Error stopping Flag bot job:', err);
+      }
+      
+      // Stop Factory Slot Regeneration background job
+      try {
+        const { stopFactorySlotRegenJob } = await import('./lib/jobs/factorySlotRegeneration');
+        const factoryStopResult = stopFactorySlotRegenJob();
+        console.log('[Server] ✅ Factory slot regen job stopped:', factoryStopResult.message);
+      } catch (err) {
+        console.error('[Server] ⚠️  Error stopping Factory slot regen job:', err);
       }
       
       httpServer.close(() => {

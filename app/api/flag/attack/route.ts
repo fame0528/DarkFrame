@@ -14,6 +14,18 @@ import { getAuthenticatedUser } from '@/lib/authMiddleware';
 import { ObjectId } from 'mongodb';
 import { type FlagAttackRequest, type FlagAttackResponse, type FlagAPIResponse, FLAG_CONFIG } from '@/types/flag.types';
 import { Player } from '@/types/game.types';
+import { 
+  withRequestLogging, 
+  createRouteLogger, 
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  FlagAttackSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
 
 /**
  * Calculate distance between two points
@@ -24,16 +36,22 @@ function calculateDistance(pos1: { x: number; y: number }, pos2: { x: number; y:
   return Math.sqrt(dx * dx + dy * dy);
 }
 
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.FLAG_ATTACK);
+
 /**
  * POST /api/flag/attack
  * 
  * Attack the current Flag Bearer
  */
-export async function POST(request: NextRequest): Promise<NextResponse<FlagAPIResponse<FlagAttackResponse>>> {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest): Promise<NextResponse<FlagAPIResponse<FlagAttackResponse>>> => {
+  const log = createRouteLogger('FlagAttackAPI');
+  const endTimer = log.time('flagAttack');
+
   try {
     // Authentication
     const user = await getAuthenticatedUser();
     if (!user) {
+      log.warn('Unauthenticated flag attack attempt');
       return NextResponse.json({
         success: false,
         error: 'Unauthorized - please log in',
@@ -41,16 +59,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<FlagAPIRe
       }, { status: 401 });
     }
     
-    const body: FlagAttackRequest = await request.json();
+    const body = await request.json();
+    const validated = FlagAttackSchema.parse(body);
     
-    // Validate request
-    if (!body.targetPlayerId || !body.attackerPosition) {
-      return NextResponse.json({
-        success: false,
-        error: 'Missing required fields: targetPlayerId and attackerPosition',
-        timestamp: new Date()
-      }, { status: 400 });
-    }
+    log.debug('Flag attack request', { 
+      attacker: user.username, 
+      target: validated.targetPlayerId,
+      position: validated.attackerPosition 
+    });
     
     const db = await connectToDatabase();
     
@@ -73,9 +89,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<FlagAPIRe
     
     // Verify target is current bearer (handle bot attacks)
     const holderId = holder.playerId?.toString() || holder.botId?.toString() || '';
-    const targetIdNormalized = body.targetPlayerId === 'BOT' || body.targetPlayerId === '' 
+    const targetIdNormalized = validated.targetPlayerId === 'BOT' || validated.targetPlayerId === '' 
       ? holderId 
-      : body.targetPlayerId;
+      : validated.targetPlayerId;
       
     if (holderId !== targetIdNormalized && targetIdNormalized !== holderId) {
       return NextResponse.json({
@@ -103,7 +119,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<FlagAPIRe
     }
     
     // Validate attack range
-    const distance = calculateDistance(body.attackerPosition, holder.position);
+    const distance = calculateDistance(validated.attackerPosition, holder.position);
     
     if (distance > FLAG_CONFIG.ATTACK_RANGE) {
       return NextResponse.json({
@@ -155,6 +171,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<FlagAPIRe
     // Check if bearer was defeated
     if (bearerHP <= 0) {
       // Flag dropped! Attacker claims it
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 8 * 60 * 1000); // 8 minutes from now
+      
       await db.collection('flags').updateOne(
         {},
         {
@@ -167,6 +186,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<FlagAPIRe
               claimedAt: new Date(),
               hp: initialHP
             },
+            trail: [
+              {
+                x: attacker.currentPosition.x,
+                y: attacker.currentPosition.y,
+                timestamp: now,
+                expiresAt: expiresAt
+              }
+            ],
             lastUpdate: new Date()
           },
           $push: {
@@ -218,12 +245,23 @@ export async function POST(request: NextRequest): Promise<NextResponse<FlagAPIRe
     });
     
   } catch (error) {
-    console.error('[Flag Attack] Error:', error);
+    if (error instanceof ZodError) {
+      log.warn('Flag attack validation failed', { issues: error.issues });
+      return NextResponse.json({
+        success: false,
+        error: 'Invalid request data',
+        timestamp: new Date()
+      }, { status: 400 });
+    }
+
+    log.error('Flag attack error', error as Error);
     
     return NextResponse.json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to attack Flag Bearer',
       timestamp: new Date()
     }, { status: 500 });
+  } finally {
+    endTimer();
   }
-}
+}));

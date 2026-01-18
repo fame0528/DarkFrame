@@ -1,83 +1,69 @@
 /**
- * @fileoverview Clan War Declaration API Route
- * @module app/api/clan/warfare/declare/route
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/warfare/declare/route.ts
+ * @created 2025-10-18
+ * @updated 2025-01-23 (FID-20251023-001: Auth deduplication + JSDoc)
  * 
  * OVERVIEW:
  * POST endpoint for declaring war on another clan. Validates level requirements, resource costs,
  * existing wars, and cooldown periods. Integrates with warfare service for declaration logic and
  * cost calculation with perk-based reductions.
  * 
- * Endpoint: POST /api/clan/warfare/declare
- * Body: { targetClanId: string }
+ * ROUTES:
+ * - POST /api/clan/warfare/declare - Declare war on target clan
  * 
- * Business Rules:
+ * AUTHENTICATION:
+ * - requireClanMembership() - Must be clan member
+ * - Permission check in service layer (Officer, Co-Leader, Leader only)
+ * 
+ * BUSINESS RULES:
  * - Declaring clan must be level 5+
  * - Cost: 2000 Metal + 2000 Energy (reduced by territory_cost perks)
  * - Only 1 active war between clan pair allowed
  * - 48-hour cooldown after war ends before same clans can war again
  * - Permissions: Officer, Co-Leader, or Leader only
  * - Cannot declare war on own clan
- * 
- * Response:
- * - Success: { success: true, war, cost, message }
- * - Error: Specific validation error messages
- * 
- * Dependencies:
- * - JWT authentication (cookie-based)
- * - Warfare service for war declaration logic
- * - MongoDB for player and clan data
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import clientPromise from '@/lib/mongodb';
+import { getClientAndDatabase } from '@/lib/mongodb';
+import { requireClanMembership } from '@/lib/authMiddleware';
 import { declareWar } from '@/lib/clanWarfareService';
-
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'your-secret-key-min-32-characters-long'
-);
 
 /**
  * POST /api/clan/warfare/declare
- * 
  * Declare war on another clan
  * 
- * Request Body:
- * - targetClanId: string - MongoDB ObjectId of target clan
+ * @param request - NextRequest with auth cookie and body data
+ * @returns NextResponse with war declaration result or error
  * 
- * Response:
- * - 200: { success: true, war, cost, message }
- * - 400: Validation errors (not in clan, invalid target, level too low, existing war, cooldown active, insufficient resources)
- * - 401: Authentication required
- * - 403: Insufficient permissions (not Officer/Co-Leader/Leader)
- * - 404: Player or target clan not found
- * - 500: Server error
+ * @example
+ * POST /api/clan/warfare/declare
+ * Body: { targetClanId: "676a1b2c3d4e5f6a7b8c9d0e" }
+ * Response: {
+ *   success: true,
+ *   war: { warId: "...", status: "ACTIVE", ... },
+ *   cost: { metal: 1800, energy: 1800 },
+ *   message: "War declared against [DARK]"
+ * }
  * 
- * @param request - Next.js request object
- * @returns JSON response with war declaration result
+ * @throws {400} Invalid targetClanId, level too low, existing war, cooldown, insufficient resources, or own clan
+ * @throws {401} Not authenticated
+ * @throws {403} Insufficient permissions (not Officer/Co-Leader/Leader)
+ * @throws {404} Player or target clan not found
+ * @throws {500} Server error
  */
 export async function POST(request: NextRequest) {
   try {
-    // Authenticate user
-    const token = request.cookies.get('token')?.value;
+    const { db } = await getClientAndDatabase();
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    
+    const { auth, clanId } = result;
 
-    if (!token) {
-      return NextResponse.json(
-        { success: false, message: 'Authentication required' },
-        { status: 401 }
-      );
-    }
-
-    const verified = await jwtVerify(token, JWT_SECRET);
-    const username = verified.payload.username as string;
-
-    // Parse request body
+    // Parse and validate request body
     const body = await request.json();
     const { targetClanId } = body;
 
-    // Validate input
     if (!targetClanId || typeof targetClanId !== 'string') {
       return NextResponse.json(
         { success: false, message: 'Invalid targetClanId. Must be a string.' },
@@ -85,46 +71,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get player from database
-    const client = await clientPromise;
-    const db = client.db(process.env.MONGODB_DB || 'darkframe');
-    const playersCollection = db.collection('players');
-
-    const player = await playersCollection.findOne({ username });
-
-    if (!player) {
-      return NextResponse.json(
-        { success: false, message: 'Player not found' },
-        { status: 404 }
-      );
-    }
-
-    // Check if player is in a clan
-    if (!player.clanId) {
-      return NextResponse.json(
-        { success: false, message: 'You must be in a clan to declare war' },
-        { status: 400 }
-      );
-    }
-
-    // Declare war via service
-    const result = await declareWar(
-      player.clanId,
+    // Declare war via service (handles permissions, validation, costs)
+    const warResult = await declareWar(
+      clanId,
       targetClanId,
-      username // playerId is username
+      auth.username
     );
 
     return NextResponse.json({
       success: true,
-      war: result.war,
-      cost: result.cost,
-      message: result.message,
+      war: warResult.war,
+      cost: warResult.cost,
+      message: warResult.message,
     });
 
   } catch (error: any) {
     console.error('Error declaring war:', error);
 
-    // Handle specific error messages from service
+    // Permission errors
     if (error.message.includes('permission') || error.message.includes('Officer')) {
       return NextResponse.json(
         { success: false, message: error.message },
@@ -132,6 +96,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Business rule violations
     if (
       error.message.includes('level') ||
       error.message.includes('war already exists') ||
@@ -145,6 +110,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Not found errors
     if (error.message.includes('not found')) {
       return NextResponse.json(
         { success: false, message: error.message },

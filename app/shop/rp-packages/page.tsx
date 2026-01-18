@@ -104,7 +104,7 @@ export default function RPPackagesPage() {
   const [selectedPackage, setSelectedPackage] = useState<string | null>(null);
 
   // Check if player is VIP for bonus display
-  const isVIP = player?.isVIP && player.vipExpiresAt && new Date(player.vipExpiresAt) > new Date();
+  const isVIP = player?.vip && player.vipExpiration && new Date(player.vipExpiration) > new Date();
   const VIP_BONUS = 0.20; // 20% bonus RP for VIP
 
   // ============================================================================

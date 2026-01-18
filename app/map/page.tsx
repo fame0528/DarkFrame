@@ -44,6 +44,7 @@ import {
   MAP_CONFIG
 } from '@/types';
 import { generateMockMapData } from '@/components/map/GridRenderer';
+import { isTypingInInput } from '@/hooks/useKeyboardShortcut';
 
 /**
  * Map Page Component
@@ -105,6 +106,11 @@ export default function MapPage() {
    */
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if typing in input field
+      if (isTypingInInput()) {
+        return;
+      }
+
       const panSpeed = 32; // Move 1 tile at a time
       const maxWorldX = MAP_CONFIG.WIDTH * MAP_CONFIG.TILE_SIZE; // 150 * 32 = 4800px
       const maxWorldY = MAP_CONFIG.HEIGHT * MAP_CONFIG.TILE_SIZE; // 150 * 32 = 4800px

@@ -152,6 +152,38 @@ export async function getDatabase(): Promise<Db> {
 }
 
 /**
+ * Get MongoDB client instance
+ * 
+ * @returns Promise that resolves to MongoDB client
+ * 
+ * @example
+ * ```typescript
+ * const client = await getClient();
+ * const db = client.db('darkframe');
+ * ```
+ */
+export async function getClient(): Promise<MongoClient> {
+  return await clientPromise;
+}
+
+/**
+ * Get both client and database (for services that need both)
+ * 
+ * @returns Promise that resolves to { client, db }
+ * 
+ * @example
+ * ```typescript
+ * const { client, db } = await getClientAndDatabase();
+ * initializeClanService(client, db);
+ * ```
+ */
+export async function getClientAndDatabase(): Promise<{ client: MongoClient; db: Db }> {
+  const client = await clientPromise;
+  const db = client.db(MONGODB_DB);
+  return { client, db };
+}
+
+/**
  * Connect to database (alias for getDatabase)
  * Provided for backward compatibility with existing code
  */

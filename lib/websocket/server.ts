@@ -29,9 +29,24 @@ import {
   handlePlayerOffline,
   handleJoinClanRoom,
   handleDeclareWar,
-  handleSendMessage,
-  handleTyping,
 } from '@/lib/websocket/handlers';
+import {
+  handleMessageSend,
+  handleMessageRead,
+  handleTypingStart,
+  handleTypingStop,
+  handleJoinConversation,
+  handleLeaveConversation,
+} from '@/lib/websocket/messagingHandlers';
+import {
+  handleChatMessage,
+  handleJoinChannel,
+  handleLeaveChannel,
+  handleTypingStart as handleChatTypingStart,
+  handleTypingStop as handleChatTypingStop,
+  handleAskVeterans,
+  autoJoinChatChannels,
+} from '@/lib/websocket/chatHandlers';
 import type {
   ServerToClientEvents,
   ClientToServerEvents,
@@ -112,6 +127,9 @@ export function getSocketIOServer(
     // Auto-join appropriate rooms
     await autoJoinRooms(socket, user);
 
+    // Auto-join accessible chat channels
+    await autoJoinChatChannels(ioServer, socket);
+
     // Broadcast player online status
     await handlePlayerOnline(ioServer, socket, user);
 
@@ -141,19 +159,59 @@ export function getSocketIOServer(
     });
 
     // ============================================================================
-    // CHAT EVENT HANDLERS
+    // CHAT EVENT HANDLERS (Global/Channel Chat)
     // ============================================================================
 
     socket.on('chat:send_message', async (data, callback) => {
-      await handleSendMessage(ioServer, socket, data, callback);
+      await handleChatMessage(ioServer, socket, data, callback);
+    });
+
+    socket.on('chat:join_channel', async (data, callback) => {
+      await handleJoinChannel(ioServer, socket, data, callback);
+    });
+
+    socket.on('chat:leave_channel', async (data) => {
+      await handleLeaveChannel(ioServer, socket, data);
     });
 
     socket.on('chat:start_typing', async (data) => {
-      await handleTyping(ioServer, socket, data, true);
+      await handleChatTypingStart(ioServer, socket, data);
     });
 
     socket.on('chat:stop_typing', async (data) => {
-      await handleTyping(ioServer, socket, data, false);
+      await handleChatTypingStop(ioServer, socket, data);
+    });
+
+    socket.on('chat:ask_veterans', async (data, callback) => {
+      await handleAskVeterans(ioServer, socket, data, callback);
+    });
+
+    // ============================================================================
+    // MESSAGING EVENT HANDLERS (Private 1-on-1)
+    // ============================================================================
+
+    socket.on('message:send', async (data, callback) => {
+      await handleMessageSend(ioServer, socket, data, callback);
+    });
+
+    socket.on('message:mark_read', async (data) => {
+      await handleMessageRead(ioServer, socket, data);
+    });
+
+    socket.on('typing:start_private', async (data) => {
+      await handleTypingStart(ioServer, socket, data);
+    });
+
+    socket.on('typing:stop_private', async (data) => {
+      await handleTypingStop(ioServer, socket, data);
+    });
+
+    socket.on('conversation:join', async (data) => {
+      await handleJoinConversation(socket, data);
+    });
+
+    socket.on('conversation:leave', async (data) => {
+      await handleLeaveConversation(socket, data);
     });
 
     // ============================================================================

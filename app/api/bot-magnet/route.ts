@@ -24,19 +24,30 @@ import {
   getBeaconStatus,
   deactivateBeacon,
 } from '@/lib/botMagnetService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET - Get beacon status
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('bot-magnet-get');
+  const endTimer = log.time('bot-magnet-get');
+
   try {
     const tokenPayload = await getAuthenticatedUser();
 
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
 
     // Fetch full player from database
@@ -44,39 +55,40 @@ export async function GET(request: NextRequest) {
     const player = await playersCollection.findOne({ username: tokenPayload.username });
 
     if (!player || !player._id) {
-      return NextResponse.json(
-        { error: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.RESOURCE_NOT_FOUND, 'Player not found');
     }
 
     const status = await getBeaconStatus(player._id);
+
+    log.info('Bot magnet beacon status retrieved', { 
+      playerId: player._id.toString(),
+      hasActiveBeacon: status.hasActiveBeacon
+    });
 
     return NextResponse.json({
       success: true,
       ...status,
     });
   } catch (error) {
-    console.error('Error getting beacon status:', error);
-    return NextResponse.json(
-      { error: 'Failed to get beacon status' },
-      { status: 500 }
-    );
+    log.error('Error getting beacon status', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * POST - Deploy new beacon
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('bot-magnet-post');
+  const endTimer = log.time('bot-magnet-post');
+
   try {
     const tokenPayload = await getAuthenticatedUser();
 
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
 
     // Fetch full player from database
@@ -84,19 +96,13 @@ export async function POST(request: NextRequest) {
     const player = await playersCollection.findOne({ username: tokenPayload.username });
 
     if (!player || !player._id) {
-      return NextResponse.json(
-        { error: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.RESOURCE_NOT_FOUND, 'Player not found');
     }
 
     // Check tech requirement
     const unlockedTechs = player.unlockedTechs || [];
     if (!unlockedTechs.includes('bot-magnet')) {
-      return NextResponse.json(
-        { error: 'Requires Bot Magnet technology' },
-        { status: 403 }
-      );
+      return NextResponse.json({ error: 'Requires Bot Magnet technology' }, { status: 403 });
     }
 
     const body = await request.json();
@@ -109,10 +115,7 @@ export async function POST(request: NextRequest) {
       !Number.isInteger(x) ||
       !Number.isInteger(y)
     ) {
-      return NextResponse.json(
-        { error: 'Invalid coordinates. Must be integers.' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_INVALID_FORMAT, 'Invalid coordinates. Must be integers.');
     }
 
     // Deploy beacon
@@ -124,11 +127,15 @@ export async function POST(request: NextRequest) {
     );
 
     if (!result.success) {
-      return NextResponse.json(
-        { error: result.message },
-        { status: 400 }
-      );
+      log.warn('Beacon deployment failed', { reason: result.message, x, y });
+      return NextResponse.json({ error: result.message || 'Failed to deploy beacon' }, { status: 400 });
     }
+
+    log.info('Bot magnet beacon deployed', { 
+      playerId: player._id.toString(), 
+      x, 
+      y 
+    });
 
     return NextResponse.json({
       success: true,
@@ -136,26 +143,25 @@ export async function POST(request: NextRequest) {
       beacon: result.beacon,
     });
   } catch (error) {
-    console.error('Error deploying beacon:', error);
-    return NextResponse.json(
-      { error: 'Failed to deploy beacon' },
-      { status: 500 }
-    );
+    log.error('Error deploying beacon', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * DELETE - Deactivate beacon
  */
-export async function DELETE(request: NextRequest) {
+export const DELETE = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('bot-magnet-delete');
+  const endTimer = log.time('bot-magnet-delete');
+
   try {
     const tokenPayload = await getAuthenticatedUser();
 
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
 
     // Fetch full player from database
@@ -163,33 +169,29 @@ export async function DELETE(request: NextRequest) {
     const player = await playersCollection.findOne({ username: tokenPayload.username });
 
     if (!player || !player._id) {
-      return NextResponse.json(
-        { error: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.RESOURCE_NOT_FOUND, 'Player not found');
     }
 
     const result = await deactivateBeacon(player._id);
 
     if (!result.success) {
-      return NextResponse.json(
-        { error: result.message },
-        { status: 400 }
-      );
+      log.warn('Beacon deactivation failed', { reason: result.message });
+      return NextResponse.json({ error: result.message }, { status: 400 });
     }
+
+    log.info('Bot magnet beacon deactivated', { playerId: player._id.toString() });
 
     return NextResponse.json({
       success: true,
       message: result.message,
     });
   } catch (error) {
-    console.error('Error deactivating beacon:', error);
-    return NextResponse.json(
-      { error: 'Failed to deactivate beacon' },
-      { status: 500 }
-    );
+    log.error('Error deactivating beacon', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * IMPLEMENTATION NOTES:

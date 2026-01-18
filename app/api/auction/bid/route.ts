@@ -9,11 +9,25 @@
  * Automatically outbids previous highest bidder.
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { verifyAuth } from '@/lib/authMiddleware';
 import { placeBid } from '@/lib/auctionService';
 import { PlaceBidRequest } from '@/types/auction.types';
 import { logger } from '@/lib/logger';
+import { 
+  withRequestLogging, 
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  BidAuctionSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.auctionBid);
 
 /**
  * POST /api/auction/bid
@@ -42,58 +56,62 @@ import { logger } from '@/lib/logger';
  * - 400: Invalid bid (self-bid, too low, auction inactive, etc.)
  * - 500: Server error
  */
-export async function POST(request: Request) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AuctionBidAPI');
+  const endTimer = log.time('placeBid');
+  
   try {
     // Verify authentication
     const authResult = await verifyAuth();
     if (!authResult || !authResult.username) {
-      return NextResponse.json(
-        { success: false, message: 'Authentication required' },
-        { status: 401 }
-      );
+      log.warn('Unauthenticated bid attempt');
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED);
     }
 
     const username = authResult.username;
 
-    // Parse request body
+    // Parse and validate request body
     const body: PlaceBidRequest = await request.json();
+    const validated = BidAuctionSchema.parse(body);
 
-    // Validate request
-    if (!body.auctionId || !body.bidAmount) {
-      return NextResponse.json(
-        { success: false, message: 'Missing required fields: auctionId, bidAmount' },
-        { status: 400 }
-      );
-    }
-
-    if (typeof body.bidAmount !== 'number' || body.bidAmount <= 0) {
-      return NextResponse.json(
-        { success: false, message: 'Bid amount must be a positive number' },
-        { status: 400 }
-      );
-    }
+    log.debug('Bid placement request', { 
+      username, 
+      auctionId: validated.auctionId, 
+      bidAmount: validated.bidAmount 
+    });
 
     // Place bid
-    const result = await placeBid(username, body);
+    const result = await placeBid(username, validated);
 
     if (!result.success) {
-      return NextResponse.json(result, { status: 400 });
+      log.warn('Bid rejected', { 
+        username, 
+        auctionId: validated.auctionId, 
+        reason: result.message 
+      });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, { message: result.message });
     }
+
+    log.info('Bid placed successfully', { 
+      username, 
+      auctionId: validated.auctionId, 
+      bidAmount: validated.bidAmount 
+    });
 
     return NextResponse.json(result);
 
   } catch (error) {
-    logger.error('Error in place bid API', error instanceof Error ? error : new Error(String(error)));
-    return NextResponse.json(
-      {
-        success: false,
-        message: 'Failed to place bid',
-        error: 'SERVER_ERROR'
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      log.warn('Bid validation failed', { issues: error.issues });
+      return createValidationErrorResponse(error);
+    }
+
+    log.error('Bid placement error', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

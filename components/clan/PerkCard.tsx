@@ -31,6 +31,8 @@
 
 'use client';
 
+import { formatNumberAbbreviated } from '@/utils/formatting';
+
 interface PerkCardProps {
   perk: {
     id: string;
@@ -135,13 +137,6 @@ export default function PerkCard({
     }
   };
 
-  // Format large numbers
-  const formatNumber = (num: number): string => {
-    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
-    return num.toString();
-  };
-
   const colors = getTierColors(perk.tier);
 
   return (
@@ -194,15 +189,15 @@ export default function PerkCard({
         <div className="text-xs text-gray-400">Cost:</div>
         <div className="grid grid-cols-3 gap-1 text-xs">
           <div className="text-center">
-            <div className="text-orange-400">{formatNumber(perk.cost.metal)}</div>
+            <div className="text-orange-400">{formatNumberAbbreviated(perk.cost.metal)}</div>
             <div className="text-gray-500">Metal</div>
           </div>
           <div className="text-center">
-            <div className="text-blue-400">{formatNumber(perk.cost.energy)}</div>
+            <div className="text-blue-400">{formatNumberAbbreviated(perk.cost.energy)}</div>
             <div className="text-gray-500">Energy</div>
           </div>
           <div className="text-center">
-            <div className="text-purple-400">{formatNumber(perk.cost.researchPoints)}</div>
+            <div className="text-purple-400">{formatNumberAbbreviated(perk.cost.researchPoints)}</div>
             <div className="text-gray-500">RP</div>
           </div>
         </div>
@@ -266,3 +261,4 @@ export default function PerkCard({
     </div>
   );
 }
+

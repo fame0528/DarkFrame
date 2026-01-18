@@ -4,17 +4,31 @@
  * @overview Admin API - List all users with VIP status
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
+import { getAuthenticatedUser } from '@/lib/authMiddleware';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 
-export async function GET(request: Request) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
+
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/vip/list');
+  const endTimer = log.time('list-vip-users');
+
   try {
-    // TODO: Add admin authentication check
-    // const { searchParams } = new URL(request.url);
-    // const adminUsername = searchParams.get('admin');
-    // if (!await isAdmin(adminUsername)) {
-    //   return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 403 });
-    // }
+    // Admin authentication check
+    const user = await getAuthenticatedUser();
+    if (!user?.isAdmin) {
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED);
+    }
 
     const playersCollection = await getCollection('players');
     
@@ -24,29 +38,35 @@ export async function GET(request: Request) {
       .project({
         username: 1,
         email: 1,
-        isVIP: 1,
-        vipExpiresAt: 1,
+        vip: 1,
+        vipExpiration: 1,
         createdAt: 1
       })
       .sort({ username: 1 })
       .toArray();
+
+    const vipUsers = users.filter(u => u.vip);
+
+    log.info('VIP users list retrieved', {
+      totalUsers: users.length,
+      vipUsers: vipUsers.length,
+    });
 
     return NextResponse.json({
       success: true,
       users: users.map(user => ({
         username: user.username,
         email: user.email,
-        isVIP: user.isVIP || false,
-        vipExpiresAt: user.vipExpiresAt || null,
+        vip: user.vip || false,
+        vipExpiration: user.vipExpiration || null,
         createdAt: user.createdAt || null
       }))
     });
 
   } catch (error) {
-    console.error('Error fetching users:', error);
-    return NextResponse.json(
-      { success: false, error: 'Database error' },
-      { status: 500 }
-    );
+    log.error('Failed to fetch users', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

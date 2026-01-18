@@ -1,133 +1,86 @@
 /**
  * @file lib/slotRegenService.ts
  * @created 2025-10-17
- * @overview Factory slot regeneration service
+ * @updated 2025-11-04 - Aligned with new capacity model (usedSlots regen, large caps)
+ * @overview Factory slot regeneration helpers (on-demand calculations)
  * 
  * OVERVIEW:
- * Handles automatic slot regeneration for factories. Slots regenerate at a rate of
- * 1 slot per hour up to a maximum of 10 slots. This service calculates how many
- * slots should be added based on time elapsed since last regeneration.
+ * New model: factory.slots is the MAX CAPACITY (derived from level).
+ * Regeneration reduces usedSlots over time. Capacity is large (e.g., 5,000 at L1)
+ * and regen rates ensure a 12-hour full recovery curve across levels.
  * 
- * REGENERATION MECHANICS:
- * - Base rate: 1 slot per hour
- * - Maximum slots: 10
- * - Regeneration is calculated when:
- *   1. Factory status is queried
- *   2. Player attempts to build units
- *   3. Background job runs (optional)
+ * This file provides lightweight, on-demand helpers used by API endpoints to
+ * compute regeneration without waiting for the background job tick. These helpers
+ * mirror the logic in the background job for consistency.
  */
 
 import { Factory } from '@/types';
+import { getMaxSlots, getRegenRate } from '@/lib/factoryUpgradeService';
+
+/** Milliseconds in one hour */
+const HOUR_IN_MS = 60 * 60 * 1000;
 
 /**
- * Slot regeneration configuration
- */
-const SLOT_REGEN_CONFIG = {
-  /** Slots regenerated per hour */
-  REGEN_RATE: 1,
-  
-  /** Maximum slots a factory can have */
-  MAX_SLOTS: 10,
-  
-  /** Milliseconds in one hour */
-  HOUR_IN_MS: 60 * 60 * 1000
-};
-
-/**
- * Calculate how many slots should be regenerated based on time elapsed
+ * Calculate how many used slots should be recovered based on time elapsed
  * 
  * @param lastRegenTime - Timestamp of last regeneration
- * @returns Number of slots to regenerate
- * 
- * @example
- * // 3 hours elapsed = 3 slots
- * const slots = calculateSlotsToRegen(new Date(Date.now() - 3 * 60 * 60 * 1000));
- * // Returns: 3
+ * @param regenRatePerHour - Slots recovered per hour (depends on factory level)
+ * @returns Whole slots to recover
  */
-export function calculateSlotsToRegen(lastRegenTime: Date): number {
+function calculateRecoveredSlots(lastRegenTime: Date, regenRatePerHour: number): number {
   const now = new Date();
   const timeDiff = now.getTime() - new Date(lastRegenTime).getTime();
-  const hoursElapsed = timeDiff / SLOT_REGEN_CONFIG.HOUR_IN_MS;
-  
-  // Only count full hours
-  const fullHoursElapsed = Math.floor(hoursElapsed);
-  
-  return fullHoursElapsed * SLOT_REGEN_CONFIG.REGEN_RATE;
+  const hoursElapsed = timeDiff / HOUR_IN_MS;
+  return Math.floor(hoursElapsed * regenRatePerHour);
 }
 
 /**
- * Apply slot regeneration to a factory
+ * Apply on-demand regeneration to a factory object (in-memory only)
+ * - Decreases usedSlots by the recovered amount (min 0)
+ * - Advances lastSlotRegen by the exact whole-slot intervals consumed
+ * - Does NOT change factory.slots (capacity)
  * 
  * @param factory - Factory data to update
- * @param balanceMultiplier - Optional balance multiplier (0.85-1.0 from player balance)
- * @returns Updated factory with regenerated slots
- * 
- * @example
- * const updatedFactory = applySlotRegeneration(currentFactory);
- * console.log(`Slots: ${updatedFactory.slots}/${SLOT_REGEN_CONFIG.MAX_SLOTS}`);
- * 
- * // With balance penalty
- * const updatedFactory = applySlotRegeneration(currentFactory, 0.85); // -15% regen
+ * @param balanceMultiplier - Optional multiplier (0.85-1.0) to nerf regen if needed
+ * @returns Updated factory with potentially reduced usedSlots
  */
 export function applySlotRegeneration(factory: Factory, balanceMultiplier: number = 1.0): Factory {
-  let slotsToAdd = calculateSlotsToRegen(factory.lastSlotRegen);
-  
-  if (slotsToAdd === 0) {
-    // No regeneration needed
+  const level = factory.level || 1;
+  const regenRate = getRegenRate(level);
+  let recovered = calculateRecoveredSlots(factory.lastSlotRegen, regenRate);
+
+  if (recovered <= 0) {
     return factory;
   }
-  
-  // Apply balance multiplier if provided (only affects Critical imbalance: 0.85)
+
   if (balanceMultiplier < 1.0) {
-    slotsToAdd = Math.floor(slotsToAdd * balanceMultiplier);
+    recovered = Math.floor(recovered * balanceMultiplier);
   }
-  
-  // Calculate new slot count (capped at maximum)
-  const newSlots = Math.min(
-    factory.slots + slotsToAdd,
-    SLOT_REGEN_CONFIG.MAX_SLOTS
-  );
-  
-  // Update last regen time to now (or to the time of the last full hour)
-  const now = new Date();
+
+  const newUsedSlots = Math.max(0, (factory.usedSlots || 0) - recovered);
+
+  // Advance lastSlotRegen by the number of full slots worth of time
+  const msPerSlot = HOUR_IN_MS / regenRate;
   const lastRegenTime = new Date(factory.lastSlotRegen);
-  const hoursToAdvance = Math.floor(calculateSlotsToRegen(factory.lastSlotRegen));
-  const newLastRegen = new Date(lastRegenTime.getTime() + (hoursToAdvance * SLOT_REGEN_CONFIG.HOUR_IN_MS));
-  
+  const newLastRegen = new Date(lastRegenTime.getTime() + recovered * msPerSlot);
+
   return {
     ...factory,
-    slots: newSlots,
-    lastSlotRegen: newLastRegen
+    usedSlots: newUsedSlots,
+    lastSlotRegen: newLastRegen,
   };
 }
 
 /**
- * Calculate available slots for building (current slots minus used slots)
- * 
- * @param factory - Factory data
- * @returns Number of slots available for new units
- * 
- * @example
- * const available = getAvailableSlots(factory);
- * if (available >= unitCost) {
- *   // Can build unit
- * }
+ * Calculate available slots for building (capacity - used)
  */
 export function getAvailableSlots(factory: Factory): number {
-  return Math.max(0, factory.slots - factory.usedSlots);
+  const capacity = getMaxSlots(factory.level || 1);
+  return Math.max(0, capacity - (factory.usedSlots || 0));
 }
 
 /**
  * Check if factory has enough slots to build a unit
- * 
- * @param factory - Factory data
- * @param requiredSlots - Number of slots needed
- * @returns True if factory has enough available slots
- * 
- * @example
- * if (hasEnoughSlots(factory, 1)) {
- *   await buildUnit(factory, unitType);
- * }
  */
 export function hasEnoughSlots(factory: Factory, requiredSlots: number): boolean {
   const available = getAvailableSlots(factory);
@@ -135,37 +88,22 @@ export function hasEnoughSlots(factory: Factory, requiredSlots: number): boolean
 }
 
 /**
- * Consume slots when building a unit
- * 
- * @param factory - Factory data
- * @param slotsToConsume - Number of slots to consume
- * @returns Updated factory with consumed slots
- * @throws Error if not enough slots available
- * 
- * @example
- * const updatedFactory = consumeSlots(factory, 1);
- * // factory.usedSlots increased by 1
+ * Consume slots when building a unit (increments usedSlots)
+ * Throws if insufficient capacity.
  */
 export function consumeSlots(factory: Factory, slotsToConsume: number): Factory {
   if (!hasEnoughSlots(factory, slotsToConsume)) {
     throw new Error(`Not enough slots available. Need ${slotsToConsume}, have ${getAvailableSlots(factory)}`);
   }
-  
+
   return {
     ...factory,
-    usedSlots: factory.usedSlots + slotsToConsume
+    usedSlots: (factory.usedSlots || 0) + slotsToConsume,
   };
 }
 
 /**
- * Calculate time until next slot regeneration
- * 
- * @param factory - Factory data
- * @returns Object with hours, minutes, seconds until next slot
- * 
- * @example
- * const timeLeft = getTimeUntilNextSlot(factory);
- * console.log(`Next slot in ${timeLeft.minutes}m ${timeLeft.seconds}s`);
+ * Time until the next recovered slot (based on level regen rate)
  */
 export function getTimeUntilNextSlot(factory: Factory): {
   hours: number;
@@ -173,57 +111,39 @@ export function getTimeUntilNextSlot(factory: Factory): {
   seconds: number;
   totalMs: number;
 } {
+  const regenRate = getRegenRate(factory.level || 1);
+  const msPerSlot = HOUR_IN_MS / regenRate;
   const now = new Date();
   const lastRegen = new Date(factory.lastSlotRegen);
-  const nextRegen = new Date(lastRegen.getTime() + SLOT_REGEN_CONFIG.HOUR_IN_MS);
-  
+  const nextRegen = new Date(lastRegen.getTime() + msPerSlot);
+
   const timeLeft = nextRegen.getTime() - now.getTime();
-  
   if (timeLeft <= 0) {
     return { hours: 0, minutes: 0, seconds: 0, totalMs: 0 };
   }
-  
-  const hours = Math.floor(timeLeft / SLOT_REGEN_CONFIG.HOUR_IN_MS);
-  const minutes = Math.floor((timeLeft % SLOT_REGEN_CONFIG.HOUR_IN_MS) / (60 * 1000));
+
+  const hours = Math.floor(timeLeft / HOUR_IN_MS);
+  const minutes = Math.floor((timeLeft % HOUR_IN_MS) / (60 * 1000));
   const seconds = Math.floor((timeLeft % (60 * 1000)) / 1000);
-  
   return { hours, minutes, seconds, totalMs: timeLeft };
 }
 
 /**
- * Get slot regeneration configuration (for display purposes)
+ * Get current capacity for a factory (convenience)
  */
-export function getSlotRegenConfig() {
-  return {
-    regenRate: SLOT_REGEN_CONFIG.REGEN_RATE,
-    maxSlots: SLOT_REGEN_CONFIG.MAX_SLOTS,
-    hourInMs: SLOT_REGEN_CONFIG.HOUR_IN_MS
-  };
+export function getFactoryCapacity(factory: Factory): number {
+  return getMaxSlots(factory.level || 1);
 }
 
 // ============================================================
 // IMPLEMENTATION NOTES
 // ============================================================
 /**
- * SLOT REGENERATION LOGIC:
- * 
- * 1. Factories start with 10 slots, max 10 slots
- * 2. Slots regenerate at 1 slot per hour
- * 3. Regeneration is applied "lazily" when factory is accessed
- * 4. Only full hours count (3.7 hours = 3 slots)
- * 5. lastSlotRegen tracks the timestamp for calculation
- * 
- * EXAMPLE TIMELINE:
- * - 00:00 - Factory has 5 slots, lastRegen = 00:00
- * - 00:30 - Still 5 slots (0.5 hours elapsed)
- * - 01:00 - 6 slots regenerated (1 full hour elapsed)
- * - 04:00 - 9 slots regenerated (4 full hours elapsed)
- * - 06:00 - 10 slots (capped at max, 5 full hours would give 10)
- * 
- * INTEGRATION POINTS:
- * - /api/factory/status - Apply regen before returning factory data
- * - /api/factory/build-unit - Apply regen before validating slots
- * - Background job (optional) - Periodically update all factories
+ * SLOT REGENERATION LOGIC (NEW):
+ * - Capacity is derived from level: getMaxSlots(level)
+ * - usedSlots decreases over time based on getRegenRate(level)
+ * - Background job performs periodic DB updates
+ * - These helpers provide immediate, in-memory calculations for endpoints
  */
 
 // ============================================================

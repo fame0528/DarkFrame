@@ -74,20 +74,27 @@ export const AchievementNotification: React.FC<AchievementNotificationProps> = (
 
   return (
     <div className="fixed top-20 left-1/2 transform -translate-x-1/2 z-50 animate-bounce-in">
-      {/* Confetti for Epic/Legendary */}
+      {/* Confetti for Epic/Legendary - Using CSS animations to avoid CSP violations */}
       {(achievement.rarity === AchievementRarity.Epic || achievement.rarity === AchievementRarity.Legendary) && (
         <div className="absolute inset-0 pointer-events-none">
-          {[...Array(20)].map((_, i) => (
-            <div
-              key={i}
-              className="absolute w-2 h-2 bg-yellow-400 rounded-full animate-confetti"
-              style={{
-                left: `${Math.random() * 100}%`,
-                animationDelay: `${Math.random() * 0.5}s`,
-                animationDuration: `${1 + Math.random()}s`
-              }}
-            />
-          ))}
+          {[...Array(20)].map((_, i) => {
+            // Generate random positions and delays using array index for deterministic values
+            const leftPercent = ((i * 37) % 100); // Pseudo-random 0-100
+            const delayMs = ((i * 73) % 500); // Pseudo-random 0-500ms
+            const durationMs = 1000 + ((i * 111) % 1000); // Pseudo-random 1000-2000ms
+            
+            return (
+              <div
+                key={i}
+                className={`absolute w-2 h-2 bg-yellow-400 rounded-full animate-confetti`}
+                style={{
+                  left: `${leftPercent}%`,
+                  animationDelay: `${delayMs}ms`,
+                  animationDuration: `${durationMs}ms`
+                }}
+              />
+            );
+          })}
         </div>
       )}
 

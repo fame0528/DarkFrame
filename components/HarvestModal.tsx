@@ -15,6 +15,7 @@ import React, { useState, useEffect } from 'react';
 import { useGameContext } from '@/context/GameContext';
 import { TerrainType } from '@/types';
 import { X } from 'lucide-react';
+import { isTypingInInput } from '@/hooks/useKeyboardShortcut';
 
 // ============================================================
 // TYPE DEFINITIONS
@@ -109,6 +110,11 @@ export default function HarvestModal({ isOpen, onClose }: HarvestModalProps) {
     if (!isOpen || isHarvesting || result) return;
 
     const handleKeyPress = (event: KeyboardEvent) => {
+      // Ignore if typing in input field
+      if (isTypingInInput()) {
+        return;
+      }
+
       const key = event.key.toLowerCase();
       
       // G for Metal/Energy

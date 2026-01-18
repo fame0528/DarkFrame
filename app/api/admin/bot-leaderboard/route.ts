@@ -2,6 +2,7 @@
  * @fileoverview Admin Bot Leaderboard API - Separate bot rankings
  * @module app/api/admin/bot-leaderboard/route
  * @created 2025-10-18
+ * @updated 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * 
  * OVERVIEW:
  * Admin-only endpoint for viewing bot-specific leaderboards.
@@ -11,6 +12,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authMiddleware';
 import clientPromise from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 // ============================================================================
 // GET - Bot Leaderboard
@@ -18,6 +30,7 @@ import clientPromise from '@/lib/mongodb';
 
 /**
  * GET /api/admin/bot-leaderboard?metric=strength
+ * Rate Limited: 500 req/min (admin dashboard)
  * Returns bot rankings by specified metric
  * Requires admin privileges (rank >= 5)
  * 
@@ -25,15 +38,17 @@ import clientPromise from '@/lib/mongodb';
  * - metric: 'strength' | 'resources' | 'defeats' | 'reputation' (default: strength)
  * - limit: number (default: 100, max: 500)
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminBotLeaderboardAPI');
+  const endTimer = log.time('bot-leaderboard');
+
   try {
     // Authenticate user
     const tokenPayload = await getAuthenticatedUser();
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     // Check admin privileges
@@ -42,10 +57,9 @@ export async function GET(request: NextRequest) {
     const player = await db.collection('players').findOne({ username: tokenPayload.username });
 
     if (!player || !player.rank || player.rank < 5) {
-      return NextResponse.json(
-        { error: 'Admin privileges required (rank 5+)' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin privileges required (rank 5+)',
+      });
     }
 
     // Parse query params
@@ -64,10 +78,9 @@ export async function GET(request: NextRequest) {
     // Validate metric
     const validMetrics = ['strength', 'resources', 'defeats', 'reputation'];
     if (!validMetrics.includes(metric)) {
-      return NextResponse.json(
-        { error: `Invalid metric. Must be one of: ${validMetrics.join(', ')}` },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_INVALID_FORMAT, {
+        message: `Invalid metric. Must be one of: ${validMetrics.join(', ')}`,
+      });
     }
 
     // Get all bots
@@ -189,6 +202,13 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    log.info('Bot leaderboard retrieved', {
+      metric,
+      totalBots: bots.length,
+      returnedCount: rankedBots.length,
+      adminUser: tokenPayload.username,
+    });
+
     return NextResponse.json({
       success: true,
       data: {
@@ -199,16 +219,12 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('Bot leaderboard fetch error:', error);
-    return NextResponse.json(
-      {
-        error: 'Failed to fetch bot leaderboard',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      },
-      { status: 500 }
-    );
+    log.error('Failed to fetch bot leaderboard', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================================
 // IMPLEMENTATION NOTES

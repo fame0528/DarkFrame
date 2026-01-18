@@ -268,6 +268,22 @@ code {
   animation: float 3s ease-in-out infinite;
 }
 
+/* Expanding fade animation for flag trail swirls */
+@keyframes expand-fade {
+  0% {
+    transform: translate(-50%, -50%) scale(0.5);
+    opacity: 0.8;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(4);
+    opacity: 0;
+  }
+}
+
+.animate-expand-fade {
+  animation: expand-fade 2s ease-out infinite;
+}
+
 /* Utility Classes */
 .text-gradient {
   background: linear-gradient(to right, var(--primary-500), var(--primary-300));
@@ -318,4 +334,66 @@ code {
     transform: translateY(-100px) scale(2);
     opacity: 0;
   }
+}
+
+/* VIP Success Page Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulseScale {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.1);
+  }
+}
+
+@keyframes drawCheck {
+  0% {
+    stroke-dasharray: 0, 100;
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    stroke-dasharray: 100, 0;
+    opacity: 1;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% center;
+  }
+  100% {
+    background-position: 200% center;
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.6s ease-out;
+}
+
+.animate-pulse-scale {
+  animation: pulseScale 2s ease-in-out infinite;
+}
+
+.animate-draw-check {
+  stroke-dasharray: 100;
+  animation: drawCheck 1s ease-out forwards;
+}
+
+.animate-shimmer {
+  background-size: 200% auto;
+  animation: shimmer 3s linear infinite;
 }

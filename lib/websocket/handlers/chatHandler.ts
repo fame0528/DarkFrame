@@ -25,15 +25,15 @@ export async function handleSendMessage(
   io: Server,
   socket: Socket,
   data: {
-    clanId: string;
+    channelId: string;
     content: string;
     mentions?: string[];
   },
   callback?: (response: { success: boolean; messageId?: string; error?: string }) => void
 ): Promise<void> {
   const user = socket.data.user as AuthenticatedUser | undefined;
-  
-  if (!user || user.clanId !== data.clanId) {
+
+  if (!user) {
     callback?.({ success: false, error: 'Unauthorized' });
     return;
   }
@@ -45,7 +45,8 @@ export async function handleSendMessage(
     const messageId = new ObjectId();
     await db.collection('clan_messages').insertOne({
       _id: messageId,
-      clanId: data.clanId,
+      channelId: data.channelId,
+      clanId: user.clanId, // legacy compatibility if needed
       userId: user.userId,
       username: user.username,
       content: data.content,
@@ -57,9 +58,11 @@ export async function handleSendMessage(
     // Broadcast message
     const payload: ChatMessagePayload = {
       messageId: messageId.toString(),
-      clanId: data.clanId,
+      channelId: data.channelId,
       userId: user.userId,
       username: user.username,
+      level: (user as any).level ?? 1,
+      isVIP: Boolean((user as any).isVIP ?? (user as any).vip ?? false),
       content: data.content,
       timestamp: Date.now(),
       mentions: data.mentions,
@@ -81,18 +84,19 @@ export async function handleSendMessage(
 export async function handleTyping(
   io: Server,
   socket: Socket,
-  data: { clanId: string },
+  data: { channelId: string },
   isTyping: boolean
 ): Promise<void> {
   const user = socket.data.user as AuthenticatedUser | undefined;
   
-  if (!user || user.clanId !== data.clanId) return;
+  if (!user) return;
   
   const payload: ChatTypingPayload = {
-    clanId: data.clanId,
+    channelId: data.channelId,
     userId: user.userId,
     username: user.username,
     isTyping,
+    timestamp: Date.now(),
   };
   
   await broadcastTypingIndicator(io, payload);

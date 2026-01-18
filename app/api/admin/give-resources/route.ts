@@ -13,92 +13,123 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authService';
 import clientPromise from '@/lib/mongodb';
+import { 
+  withRequestLogging, 
+  createRouteLogger, 
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  GiveResourcesSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
 
-export async function POST(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.adminBot);
+
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminGiveResourcesAPI');
+  const endTimer = log.time('giveResources');
+
   try {
     // Admin authentication
     const adminUser = await getAuthenticatedUser();
     if (!adminUser || !adminUser.rank || adminUser.rank < 5) {
-      return NextResponse.json(
-        { success: false, error: 'Admin access required' },
-        { status: 403 }
-      );
+      log.warn('Unauthorized admin access attempt', { username: adminUser?.username });
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Admin access required (rank 5+)'
+      });
     }
 
     const body = await request.json();
-    const { username, metal = 0, energy = 0 } = body;
+    const validated = GiveResourcesSchema.parse(body);
 
-    if (!username) {
-      return NextResponse.json(
-        { success: false, error: 'Username required' },
-        { status: 400 }
-      );
-    }
-
-    if (metal < 0 || energy < 0) {
-      return NextResponse.json(
-        { success: false, error: 'Resource amounts must be positive' },
-        { status: 400 }
-      );
-    }
+    log.debug('Give resources request', { 
+      username: validated.username, 
+      metal: validated.metal, 
+      energy: validated.energy,
+      adminUsername: adminUser.username
+    });
 
     const client = await clientPromise;
     const db = client.db('game');
 
     // Check if player exists
-    const player = await db.collection('players').findOne({ username });
+    const player = await db.collection('players').findOne({ username: validated.username });
     if (!player) {
-      return NextResponse.json(
-        { success: false, error: 'Player not found' },
-        { status: 404 }
-      );
+      log.warn('Player not found for resource grant', { username: validated.username });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: 'Player not found'
+      });
     }
 
-    // Update player resources
+    // Update player resources atomically
     const result = await db.collection('players').updateOne(
-      { username },
+      { username: validated.username },
       {
         $inc: {
-          metal: metal,
-          energy: energy
+          metal: validated.metal,
+          energy: validated.energy
         }
       }
     );
 
-    // Log admin action
+    if (result.modifiedCount === 0) {
+      log.error('Failed to update player resources', new Error('Database update failed'), {
+        username: validated.username,
+        metal: validated.metal,
+        energy: validated.energy
+      });
+      return createErrorResponse(ErrorCode.INTERNAL_ERROR, {
+        message: 'Failed to give resources'
+      });
+    }
+
+    // Log admin action for audit trail
     await db.collection('adminLogs').insertOne({
       timestamp: new Date(),
       adminUsername: adminUser.username,
       actionType: 'GIVE_RESOURCES',
-      targetUsername: username,
+      targetUsername: validated.username,
       details: {
-        metal,
-        energy,
+        metal: validated.metal,
+        energy: validated.energy,
         previousMetal: player.metal || 0,
         previousEnergy: player.energy || 0
       }
     });
 
+    const newResources = {
+      metal: (player.metal || 0) + validated.metal,
+      energy: (player.energy || 0) + validated.energy
+    };
+
+    log.info('Resources granted successfully', { 
+      username: validated.username,
+      granted: { metal: validated.metal, energy: validated.energy },
+      newTotals: newResources,
+      adminUsername: adminUser.username
+    });
+
     return NextResponse.json({
       success: true,
-      message: `Gave ${metal} metal and ${energy} energy to ${username}`,
-      newResources: {
-        metal: (player.metal || 0) + metal,
-        energy: (player.energy || 0) + energy
-      }
+      message: `Gave ${validated.metal} metal and ${validated.energy} energy to ${validated.username}`,
+      newResources
     });
 
   } catch (error) {
-    console.error('Give resources error:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to give resources'
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      log.warn('Give resources validation failed', { issues: error.issues });
+      return createValidationErrorResponse(error);
+    }
+
+    log.error('Error giving resources', error as Error);
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * 📝 IMPLEMENTATION NOTES:

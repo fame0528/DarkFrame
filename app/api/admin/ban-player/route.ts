@@ -1,9 +1,11 @@
 /**
  * 📅 Created: 2025-01-18
+ * 📅 Updated: 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * 🎯 OVERVIEW:
  * Ban Player Admin Endpoint
  * 
  * POST /api/admin/ban-player
+ * Rate Limited: 30 req/hour (admin bot management)
  * - Permanently bans a player account
  * - Prevents future logins
  * - Requires ban reason and optional duration
@@ -14,35 +16,37 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authService';
 import clientPromise from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createValidationErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+import { BanPlayerSchema } from '@/lib/validation/schemas';
+import { ZodError } from 'zod';
 
-export async function POST(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.adminBot);
+
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminBanPlayerAPI');
+  const endTimer = log.time('ban-player');
+
   try {
     // Admin authentication check
     const user = await getAuthenticatedUser();
     if (!user || !user.rank || user.rank < 5) {
-      return NextResponse.json(
-        { success: false, error: 'Admin access required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin access required (rank 5+)',
+      });
     }
 
     const body = await request.json();
-    const { username, reason, durationDays, autoResolveFlags } = body;
-
-    // Validation
-    if (!username || !reason) {
-      return NextResponse.json(
-        { success: false, error: 'Username and reason are required' },
-        { status: 400 }
-      );
-    }
-
-    if (reason.trim().length < 10) {
-      return NextResponse.json(
-        { success: false, error: 'Ban reason must be at least 10 characters' },
-        { status: 400 }
-      );
-    }
+    const validated = BanPlayerSchema.parse(body);
+    const { username, reason, durationDays, autoResolveFlags } = validated;
 
     const client = await clientPromise;
     const db = client.db('game');
@@ -53,18 +57,18 @@ export async function POST(request: NextRequest) {
     // Check if player exists
     const player = await players.findOne({ username });
     if (!player) {
-      return NextResponse.json(
-        { success: false, error: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_PLAYER_NOT_FOUND, {
+        message: 'Player not found',
+        username,
+      });
     }
 
     // Prevent banning admins
     if (player.rank && player.rank >= 5) {
-      return NextResponse.json(
-        { success: false, error: 'Cannot ban admin accounts' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_CANNOT_BAN_ADMIN, {
+        message: 'Cannot ban admin accounts',
+        username,
+      });
     }
 
     // Calculate ban expiration if duration specified
@@ -132,6 +136,14 @@ export async function POST(request: NextRequest) {
       }
     });
 
+    log.info('Player banned successfully', {
+      username,
+      bannedBy: user.username,
+      isPermanent: !durationDays,
+      durationDays: durationDays || 'permanent',
+      flagsResolved: autoResolveFlags,
+    });
+
     return NextResponse.json({
       success: true,
       message: `Player ${username} has been banned`,
@@ -147,40 +159,41 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Ban player error:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to ban player'
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Failed to ban player', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * DELETE /api/admin/ban-player - Unban a player
+ * Rate Limited: 30 req/hour (admin bot management)
  * Removes ban and restores account access
  */
-export async function DELETE(request: NextRequest) {
+export const DELETE = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminUnbanPlayerAPI');
+  const endTimer = log.time('unban-player');
+
   try {
     // Admin authentication check
     const user = await getAuthenticatedUser();
     if (!user || !user.rank || user.rank < 5) {
-      return NextResponse.json(
-        { success: false, error: 'Admin access required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin access required (rank 5+)',
+      });
     }
 
     const { searchParams } = new URL(request.url);
     const username = searchParams.get('username');
 
     if (!username) {
-      return NextResponse.json(
-        { success: false, error: 'Username is required' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, {
+        message: 'Username is required',
+      });
     }
 
     const client = await clientPromise;
@@ -207,10 +220,10 @@ export async function DELETE(request: NextRequest) {
     );
 
     if (result.matchedCount === 0) {
-      return NextResponse.json(
-        { success: false, error: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_PLAYER_NOT_FOUND, {
+        message: 'Player not found',
+        username,
+      });
     }
 
     // Deactivate ban records
@@ -234,6 +247,11 @@ export async function DELETE(request: NextRequest) {
       timestamp: new Date()
     });
 
+    log.info('Player unbanned successfully', {
+      username,
+      unbannedBy: user.username,
+    });
+
     return NextResponse.json({
       success: true,
       message: `Player ${username} has been unbanned`,
@@ -245,16 +263,12 @@ export async function DELETE(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Unban player error:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to unban player'
-      },
-      { status: 500 }
-    );
+    log.error('Failed to unban player', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * 📝 IMPLEMENTATION NOTES:

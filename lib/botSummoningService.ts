@@ -28,7 +28,7 @@
 
 import { getCollection } from '@/lib/mongodb';
 import { type Player, BotSpecialization } from '@/types/game.types';
-import { createBot } from '@/lib/botService';
+import { createBotPlayer } from '@/lib/botService';
 import { ObjectId } from 'mongodb';
 
 /**
@@ -115,7 +115,7 @@ export async function summonBots(
     const zone = Math.floor(position.x / 50) * 3 + Math.floor(position.y / 50);
     
     // Create bot with resource multiplier
-    const bot = await createBot(zone, specialization, false);
+    const bot = await createBotPlayer(zone, specialization, false);
 
     // Apply resource multiplier (with safety checks)
     if (bot.resources) {

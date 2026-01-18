@@ -39,6 +39,7 @@ import { Card } from './ui/Card';
 import { StaggerChildren, StaggerItem } from './transitions/StaggerChildren';
 import { useCountUp } from '@/hooks/useCountUp';
 import { useIsMobile } from '@/hooks/useMediaQuery';
+import { isTypingInInput } from '@/hooks/useKeyboardShortcut';
 import { 
   Package, 
   Box, 
@@ -197,6 +198,11 @@ export function InventoryPanel() {
    */
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in an input
+      if (isTypingInInput()) {
+        return;
+      }
+      
       if (e.key === 'i' || e.key === 'I') {
         setIsOpen(prev => !prev);
       }

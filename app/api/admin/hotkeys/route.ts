@@ -12,14 +12,30 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDatabase } from '@/lib/mongodb';
 import { getAuthenticatedUser } from '@/lib/authMiddleware';
 import { DEFAULT_HOTKEYS, HotkeyConfig, HotkeySettings } from '@/types/hotkey.types';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 
 const HOTKEY_COLLECTION = 'hotkey_settings';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
+const putRateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.adminBot);
+const postRateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.adminBot);
 
 /**
  * GET /api/admin/hotkeys
  * Retrieve current hotkey configuration
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/hotkeys');
+  const endTimer = log.time('get-hotkeys');
+
   try {
     const db = await getDatabase();
     
@@ -28,6 +44,7 @@ export async function GET(request: NextRequest) {
     
     if (!settings) {
       // Return default hotkeys if no configuration exists
+      log.info('Returned default hotkeys (no custom config)');
       return NextResponse.json({
         success: true,
         hotkeys: DEFAULT_HOTKEYS,
@@ -36,6 +53,12 @@ export async function GET(request: NextRequest) {
       });
     }
     
+    log.info('Hotkey config retrieved', {
+      version: settings.version,
+      modifiedBy: settings.modifiedBy,
+      hotkeyCount: settings.hotkeys.length,
+    });
+
     return NextResponse.json({
       success: true,
       hotkeys: settings.hotkeys,
@@ -45,52 +68,45 @@ export async function GET(request: NextRequest) {
       isDefault: false,
     });
   } catch (error) {
-    console.error('❌ Error fetching hotkey settings:', error);
-    return NextResponse.json(
-      { success: false, message: 'Failed to retrieve hotkey settings', error: String(error) },
-      { status: 500 }
-    );
+    log.error('Failed to fetch hotkey settings', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * PUT /api/admin/hotkeys
  * Update hotkey configuration (admin only)
  */
-export async function PUT(request: NextRequest) {
+export const PUT = withRequestLogging(putRateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/hotkeys');
+  const endTimer = log.time('update-hotkeys');
+
   try {
     // Authenticate admin user
     const user = await getAuthenticatedUser();
     if (!user) {
-      return NextResponse.json(
-        { success: false, message: 'Unauthorized: Please log in' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED);
     }
     
     if (user.isAdmin !== true) {
-      return NextResponse.json(
-        { success: false, message: 'Forbidden: Admin access required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED);
     }
     
     const { hotkeys } = await request.json();
     
     // Validate hotkeys array
     if (!Array.isArray(hotkeys) || hotkeys.length === 0) {
-      return NextResponse.json(
-        { success: false, message: 'Invalid hotkeys: must be a non-empty array' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'Hotkeys must be a non-empty array');
     }
     
     // Validate each hotkey has required fields
     for (const hotkey of hotkeys) {
       if (!hotkey.action || !hotkey.key || !hotkey.displayName || !hotkey.category) {
-        return NextResponse.json(
-          { success: false, message: 'Invalid hotkey: missing required fields (action, key, displayName, category)' },
-          { status: 400 }
+        return createErrorResponse(
+          ErrorCode.VALIDATION_MISSING_FIELD, 
+          'Each hotkey must have action, key, displayName, and category'
         );
       }
     }
@@ -112,7 +128,11 @@ export async function PUT(request: NextRequest) {
       { upsert: true }
     );
     
-    console.log(`✅ Hotkey settings updated by admin: ${user.username} (version ${newSettings.version})`);
+    log.info('Hotkey settings updated', {
+      adminUsername: user.username,
+      version: newSettings.version,
+      hotkeyCount: hotkeys.length,
+    });
     
     return NextResponse.json({
       success: true,
@@ -120,34 +140,30 @@ export async function PUT(request: NextRequest) {
       version: newSettings.version,
     });
   } catch (error) {
-    console.error('❌ Error updating hotkey settings:', error);
-    return NextResponse.json(
-      { success: false, message: 'Failed to update hotkey settings', error: String(error) },
-      { status: 500 }
-    );
+    log.error('Failed to update hotkey settings', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * POST /api/admin/hotkeys/reset
  * Reset hotkeys to default configuration (admin only)
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(postRateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/hotkeys');
+  const endTimer = log.time('reset-hotkeys');
+
   try {
     // Authenticate admin user
     const user = await getAuthenticatedUser();
     if (!user) {
-      return NextResponse.json(
-        { success: false, message: 'Unauthorized: Please log in' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED);
     }
     
     if (user.isAdmin !== true) {
-      return NextResponse.json(
-        { success: false, message: 'Forbidden: Admin access required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED);
     }
     
     const db = await getDatabase();
@@ -166,7 +182,10 @@ export async function POST(request: NextRequest) {
       { upsert: true }
     );
     
-    console.log(`✅ Hotkey settings reset to defaults by admin: ${user.username}`);
+    log.info('Hotkey settings reset to defaults', {
+      adminUsername: user.username,
+      hotkeyCount: DEFAULT_HOTKEYS.length,
+    });
     
     return NextResponse.json({
       success: true,
@@ -174,13 +193,12 @@ export async function POST(request: NextRequest) {
       hotkeys: DEFAULT_HOTKEYS,
     });
   } catch (error) {
-    console.error('❌ Error resetting hotkey settings:', error);
-    return NextResponse.json(
-      { success: false, message: 'Failed to reset hotkey settings', error: String(error) },
-      { status: 500 }
-    );
+    log.error('Failed to reset hotkey settings', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

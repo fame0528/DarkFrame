@@ -17,7 +17,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { connectToDatabase, getAuthenticatedPlayer } from '@/lib/wmd/apiHelpers';
+import { connectToDatabase } from '@/lib/mongodb';
+import { getAuthenticatedPlayer } from '@/lib/wmd/apiHelpers';
 import { getNotifications } from '@/lib/wmd/notificationService';
 
 /**
@@ -30,7 +31,7 @@ import { getNotifications } from '@/lib/wmd/notificationService';
  */
 export async function GET(req: NextRequest) {
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
@@ -70,7 +71,7 @@ export async function GET(req: NextRequest) {
  */
 export async function PATCH(req: NextRequest) {
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
@@ -137,7 +138,7 @@ export async function PATCH(req: NextRequest) {
  */
 export async function DELETE(req: NextRequest) {
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
@@ -170,3 +171,4 @@ export async function DELETE(req: NextRequest) {
     );
   }
 }
+

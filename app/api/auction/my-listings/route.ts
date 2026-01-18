@@ -9,10 +9,21 @@
  * Allows seller to monitor their auction status, bids, and sales.
  */
 
-import { NextResponse } from 'next/server';
-import { verifyAuth } from '@/lib/authMiddleware';
+import { NextRequest, NextResponse } from 'next/server';
+import { getAuthenticatedUser } from '@/lib/authMiddleware';
 import { getAuctions } from '@/lib/auctionService';
 import { logger } from '@/lib/logger';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET /api/auction/my-listings
@@ -38,18 +49,18 @@ import { logger } from '@/lib/logger';
  * - 401: Authentication required
  * - 500: Server error
  */
-export async function GET(request: Request) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('auction-my-listings');
+  const endTimer = log.time('my-listings');
+  
   try {
     // Verify authentication
-    const authResult = await verifyAuth();
-    if (!authResult || !authResult.username) {
-      return NextResponse.json(
-        { success: false, message: 'Authentication required' },
-        { status: 401 }
-      );
+    const tokenPayload = await getAuthenticatedUser();
+    if (!tokenPayload) {
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
 
-    const username = authResult.username;
+    const username = tokenPayload.username;
 
     // Parse pagination parameters
     const url = new URL(request.url);
@@ -88,17 +99,12 @@ export async function GET(request: Request) {
     });
 
   } catch (error) {
-    logger.error('Error in my-listings API', error instanceof Error ? error : new Error(String(error)));
-    return NextResponse.json(
-      {
-        success: false,
-        message: 'Failed to fetch your listings',
-        error: 'SERVER_ERROR'
-      },
-      { status: 500 }
-    );
+    log.error('Failed to fetch listings', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

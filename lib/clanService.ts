@@ -900,38 +900,6 @@ export async function disbandClan(clanId: string, playerId: string): Promise<{ s
 }
 
 /**
- * Award XP to clan based on member actions
- * XP sources: harvesting, combat, research contribution, territory claims
- * 
- * @param clanId - Clan ID
- * @param xpAmount - XP to award
- * @param source - XP source description
- * @returns Updated clan with new XP total
- * 
- * @example
- * await awardClanXP('clan123', 50, 'member harvested 1000 metal');
- */
-export async function awardClanXP(
-  clanId: string,
-  xpAmount: number,
-  source: string
-): Promise<{ clan: Clan; leveledUp: boolean; newLevel?: number }> {
-  // This function is deprecated - redirect to clanLevelService
-  console.warn('awardClanXP is deprecated. Use clanLevelService.awardClanXP instead');
-  
-  const clan = await getClanById(clanId);
-  if (!clan) {
-    throw new Error('Clan not found');
-  }
-
-  return {
-    clan,
-    leveledUp: false,
-    newLevel: clan.level.currentLevel,
-  };
-}
-
-/**
  * Get clan statistics
  * Calculates total power, member stats, research progress, etc.
  * 

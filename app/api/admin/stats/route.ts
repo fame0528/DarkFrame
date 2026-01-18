@@ -11,6 +11,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
 import { Player, Tile, TerrainType } from '@/types';
+import { getAuthenticatedUser } from '@/lib/authMiddleware';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 /**
  * GET /api/admin/stats
@@ -18,25 +30,20 @@ import { Player, Tile, TerrainType } from '@/types';
  * Get game statistics for admin panel
  * Requires level 10+
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/stats');
+  const endTimer = log.time('get-admin-stats');
+
   try {
-    // Check admin access via cookie
-    const { getAuthenticatedUser } = await import('@/lib/authMiddleware');
     const user = await getAuthenticatedUser();
 
     if (!user) {
-      return NextResponse.json(
-        { success: false, error: 'Not authenticated' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED);
     }
 
     // Check admin access (isAdmin flag required)
     if (user.isAdmin !== true) {
-      return NextResponse.json(
-        { success: false, error: 'Access denied - Admin only' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED);
     }
 
     const playersCollection = await getCollection<Player>('players');
@@ -94,19 +101,25 @@ export async function GET(request: NextRequest) {
       }
     };
 
+    log.info('Admin stats retrieved', {
+      totalPlayers,
+      activePlayers24h,
+      totalBases,
+      totalFactories,
+    });
+
     return NextResponse.json({
       success: true,
       data: stats
     });
 
   } catch (error) {
-    console.error('❌ Error loading admin stats:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to load statistics' },
-      { status: 500 }
-    );
+    log.error('Failed to load admin stats', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // END OF FILE

@@ -24,77 +24,83 @@ import {
   clearConcentrationZones,
   type ConcentrationZone,
 } from '@/lib/concentrationZoneService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET - Get player's concentration zones
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('concentration-zones-get');
+  const endTimer = log.time('concentration-zones-get');
+
   try {
     const tokenPayload = await getAuthenticatedUser();
 
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
 
     const playersCollection = await getCollection<Player>('players');
     const player = await playersCollection.findOne({ username: tokenPayload.username });
 
     if (!player || !player._id) {
-      return NextResponse.json(
-        { error: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.RESOURCE_NOT_FOUND, 'Player not found');
     }
 
     const zones = await getConcentrationZones(player._id);
+
+    log.info('Concentration zones retrieved', { 
+      playerId: player._id.toString(),
+      zoneCount: zones?.length || 0
+    });
 
     return NextResponse.json({
       success: true,
       zones,
     });
   } catch (error) {
-    console.error('Error getting concentration zones:', error);
-    return NextResponse.json(
-      { error: 'Failed to get concentration zones' },
-      { status: 500 }
-    );
+    log.error('Error getting concentration zones', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * POST - Set concentration zones
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('concentration-zones-post');
+  const endTimer = log.time('concentration-zones-post');
+
   try {
     const tokenPayload = await getAuthenticatedUser();
 
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
 
     const playersCollection = await getCollection<Player>('players');
     const player = await playersCollection.findOne({ username: tokenPayload.username });
 
     if (!player || !player._id) {
-      return NextResponse.json(
-        { error: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.RESOURCE_NOT_FOUND, 'Player not found');
     }
 
     // Check tech requirement
     const unlockedTechs = player.unlockedTechs || [];
     if (!unlockedTechs.includes('bot-concentration-zones')) {
-      return NextResponse.json(
-        { error: 'Requires Bot Concentration Zones technology' },
-        { status: 403 }
-      );
+      return NextResponse.json({ error: 'Requires Bot Concentration Zones technology' }, { status: 403 });
     }
 
     const body = await request.json();
@@ -102,10 +108,7 @@ export async function POST(request: NextRequest) {
 
     // Validate zones array
     if (!Array.isArray(zones)) {
-      return NextResponse.json(
-        { error: 'Zones must be an array' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_INVALID_FORMAT, 'Zones must be an array');
     }
 
     // Validate zone structure
@@ -116,21 +119,21 @@ export async function POST(request: NextRequest) {
         !Number.isInteger(zone.centerX) ||
         !Number.isInteger(zone.centerY)
       ) {
-        return NextResponse.json(
-          { error: 'Invalid zone coordinates. Must be integers.' },
-          { status: 400 }
-        );
+        return createErrorResponse(ErrorCode.VALIDATION_INVALID_FORMAT, 'Invalid zone coordinates. Must be integers.');
       }
     }
 
     const result = await setConcentrationZones(player._id, zones);
 
     if (!result.success) {
-      return NextResponse.json(
-        { error: result.message },
-        { status: 400 }
-      );
+      log.warn('Concentration zones set failed', { reason: result.message });
+      return NextResponse.json({ error: result.message }, { status: 400 });
     }
+
+    log.info('Concentration zones set', { 
+      playerId: player._id.toString(),
+      zoneCount: zones.length
+    });
 
     return NextResponse.json({
       success: true,
@@ -138,52 +141,49 @@ export async function POST(request: NextRequest) {
       zones: result.zones,
     });
   } catch (error) {
-    console.error('Error setting concentration zones:', error);
-    return NextResponse.json(
-      { error: 'Failed to set concentration zones' },
-      { status: 500 }
-    );
+    log.error('Error setting concentration zones', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * DELETE - Clear concentration zones
  */
-export async function DELETE(request: NextRequest) {
+export const DELETE = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('concentration-zones-delete');
+  const endTimer = log.time('concentration-zones-delete');
+
   try {
     const tokenPayload = await getAuthenticatedUser();
 
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
 
     const playersCollection = await getCollection<Player>('players');
     const player = await playersCollection.findOne({ username: tokenPayload.username });
 
     if (!player || !player._id) {
-      return NextResponse.json(
-        { error: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.RESOURCE_NOT_FOUND, 'Player not found');
     }
 
     const result = await clearConcentrationZones(player._id);
+
+    log.info('Concentration zones cleared', { playerId: player._id.toString() });
 
     return NextResponse.json({
       success: true,
       message: result.message,
     });
   } catch (error) {
-    console.error('Error clearing concentration zones:', error);
-    return NextResponse.json(
-      { error: 'Failed to clear concentration zones' },
-      { status: 500 }
-    );
+    log.error('Error clearing concentration zones', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * IMPLEMENTATION NOTES:

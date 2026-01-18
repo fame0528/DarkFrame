@@ -23,6 +23,7 @@
 
 import { useEffect, useState } from 'react';
 import { RankedPlayer } from '@/lib/rankingService';
+import { formatNumber } from '@/utils/formatting';
 
 /**
  * Leaderboard API response interface
@@ -100,13 +101,6 @@ export default function LeaderboardPanel({ onClose }: LeaderboardPanelProps) {
   const filteredLeaderboard = leaderboardData?.leaderboard.filter(player =>
     player.username.toLowerCase().includes(searchQuery.toLowerCase())
   ) || [];
-  
-  /**
-   * Format number with commas
-   */
-  const formatNumber = (num: number): string => {
-    return num.toLocaleString();
-  };
   
   /**
    * Get rank display with medal emojis

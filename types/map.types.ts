@@ -186,7 +186,8 @@ export const TILE_COLORS: Record<TerrainType, number> = {
   [TerrainType.Factory]: 0x607D8B,    // Gray
   [TerrainType.Wasteland]: 0x424242,  // Dark Gray
   [TerrainType.Bank]: 0xFFD700,       // Gold
-  [TerrainType.Shrine]: 0x9C27B0      // Purple
+  [TerrainType.Shrine]: 0x9C27B0,     // Purple
+  [TerrainType.AuctionHouse]: 0xFF6F00 // Orange
 };
 
 /**

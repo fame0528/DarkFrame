@@ -1,122 +1,95 @@
 /**
- * Clan Chat API Routes
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/chat/route.ts
+ * @created 2025-10-18
+ * @updated 2025-10-23 (FID-20251023-001: Refactored to use centralized auth + JSDoc)
  * 
  * OVERVIEW:
- * API endpoints for clan chat functionality. Handles message sending, history
- * retrieval, editing, and moderation with JWT authentication and role-based
- * permissions.
+ * Clan chat functionality with message sending, history retrieval, editing, and moderation.
+ * Implements role-based permissions and rate limiting for chat operations.
  * 
- * Endpoints:
- * - GET /api/clan/chat?clanId={id}&limit={50}&before={timestamp}
- *   Retrieve chat history with pagination
+ * ROUTES:
+ * - GET /api/clan/chat - Retrieve chat history with pagination
+ * - POST /api/clan/chat - Send new message
+ * - PUT /api/clan/chat - Edit own message (within time limit)
+ * - DELETE /api/clan/chat - Delete message (moderation)
  * 
- * - POST /api/clan/chat
- *   Send new message
+ * AUTHENTICATION:
+ * - All routes require clan membership via requireClanMembership()
  * 
- * - PUT /api/clan/chat
- *   Edit own message
- * 
- * - DELETE /api/clan/chat?messageId={id}
- *   Delete message (moderation)
- * 
- * @module app/api/clan/chat/route
+ * BUSINESS RULES:
+ * - Members can send messages (recruits must wait 24h)
+ * - Only leaders can send announcements
+ * - Users can edit own messages within 5 minutes
+ * - Officers/leaders can delete any message
+ * - Members can only delete own messages
+ * - Rate limiting: 1 message per 2 seconds
+ * - Max message length: 500 characters
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import { MongoClient, Db } from 'mongodb';
+import {
+  getClientAndDatabase,
+  requireClanMembership,
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 import {
   initializeChatService,
-  sendMessage,
-  getMessages,
-  editMessage,
-  deleteMessage,
+  sendClanChatMessage,
+  getClanChatMessages,
+  editClanChatMessage,
+  deleteClanChatMessage,
   getMessagesSince,
   MessageType,
 } from '@/lib/clanChatService';
 
-const MONGODB_URI = process.env.MONGODB_URI!;
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'fallback-secret-key');
-
-let cachedClient: MongoClient | null = null;
-let cachedDb: Db | null = null;
-
-async function connectToDatabase() {
-  if (cachedClient && cachedDb) {
-    return { client: cachedClient, db: cachedDb };
-  }
-
-  const client = await MongoClient.connect(MONGODB_URI);
-  const db = client.db('darkframe');
-
-  cachedClient = client;
-  cachedDb = db;
-
-  // Initialize chat service
-  initializeChatService(client, db);
-
-  return { client, db };
-}
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
- * Extract and verify JWT from cookies
+ * GET /api/clan/chat
+ * Retrieve clan chat messages with pagination
+ * 
+ * @param request - NextRequest with authentication cookie and query parameters
+ * @returns NextResponse with messages array
+ * 
+ * @example
+ * GET /api/clan/chat?clanId=abc123&limit=50&before=2025-10-23T12:00:00Z
+ * Response: { success: true, messages: [...], count: 50 }
+ * 
+ * GET /api/clan/chat?clanId=abc123&since=2025-10-23T12:00:00Z
+ * Response: { success: true, messages: [...], count: 3 }
+ * 
+ * @throws {400} Clan ID required or invalid timestamp
+ * @throws {401} Unauthorized
+ * @throws {403} Not a member of clan
+ * @throws {404} Clan not found
+ * @throws {500} Failed to retrieve messages
  */
-async function verifyAuth(request: NextRequest): Promise<string | null> {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('clan-chat-get');
+  const endTimer = log.time('chat-get');
+  
   try {
-    const token = request.cookies.get('auth-token')?.value;
-    if (!token) return null;
+    const { client, db } = await getClientAndDatabase();
 
-    const { payload } = await jwtVerify(token, JWT_SECRET);
-    return payload.userId as string;
-  } catch {
-    return null;
-  }
-}
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    const { clanId } = result;
 
-// ============================================================================
-// GET - Retrieve Chat Messages
-// ============================================================================
+    initializeChatService(client, db);
 
-export async function GET(request: NextRequest) {
-  try {
-    await connectToDatabase();
-
-    // Authenticate
-    const playerId = await verifyAuth(request);
-    if (!playerId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    // Extract query parameters
     const { searchParams } = new URL(request.url);
-    const clanId = searchParams.get('clanId');
     const limit = parseInt(searchParams.get('limit') || '50', 10);
     const beforeParam = searchParams.get('before');
     const sinceParam = searchParams.get('since');
 
-    if (!clanId) {
-      return NextResponse.json({ error: 'Clan ID required' }, { status: 400 });
-    }
-
-    // Verify player is in clan
-    const db = cachedDb!;
-    const clansCollection = db.collection('clans');
-    const clan = await clansCollection.findOne({ _id: clanId } as any);
-    
-    if (!clan) {
-      return NextResponse.json({ error: 'Clan not found' }, { status: 404 });
-    }
-
-    const isMember = clan.members.some((m: any) => m.playerId === playerId);
-    if (!isMember) {
-      return NextResponse.json({ error: 'Not a member of this clan' }, { status: 403 });
-    }
-
     let messages;
 
-    // Handle 'since' parameter for real-time updates
     if (sinceParam) {
       const since = new Date(sinceParam);
       if (isNaN(since.getTime())) {
@@ -124,70 +97,74 @@ export async function GET(request: NextRequest) {
       }
       messages = await getMessagesSince(clanId, since);
     } else {
-      // Regular pagination with 'before'
       const before = beforeParam ? new Date(beforeParam) : undefined;
       if (beforeParam && before && isNaN(before.getTime())) {
         return NextResponse.json({ error: 'Invalid before timestamp' }, { status: 400 });
       }
-      messages = await getMessages(clanId, limit, before);
+      messages = await getClanChatMessages(clanId, limit, before);
     }
 
+    log.info('Chat messages retrieved', { clanId, messageCount: messages.length });
     return NextResponse.json({
       success: true,
       messages,
       count: messages.length,
     });
   } catch (error: any) {
-    console.error('Error retrieving chat messages:', error);
-    return NextResponse.json(
-      { error: error.message || 'Failed to retrieve messages' },
-      { status: 500 }
-    );
+    log.error('Failed to retrieve chat messages', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
-// ============================================================================
-// POST - Send Chat Message
-// ============================================================================
-
+/**
+ * POST /api/clan/chat
+ * Send a new chat message
+ * 
+ * @param request - NextRequest with authentication cookie and message data in body
+ * @returns NextResponse with created message
+ * 
+ * @example
+ * POST /api/clan/chat
+ * Body: { clanId: "abc123", message: "Hello clan!", type: "USER" }
+ * Response: { success: true, message: { id: "msg123", content: "Hello clan!", ... } }
+ * 
+ * @throws {400} Missing clan ID or message
+ * @throws {400} Message too long (max 500 chars)
+ * @throws {401} Unauthorized
+ * @throws {403} Only leaders can send announcements
+ * @throws {403} Recruits must wait 24h before chatting
+ * @throws {429} Rate limit exceeded
+ * @throws {500} Failed to send message
+ */
 export async function POST(request: NextRequest) {
   try {
-    await connectToDatabase();
+    const { client, db } = await getClientAndDatabase();
 
-    // Authenticate
-    const playerId = await verifyAuth(request);
-    if (!playerId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    const { auth, clan, clanId } = result;
 
-    // Parse request body
+    initializeChatService(client, db);
+
     const body = await request.json();
-    const { clanId, message, type } = body;
+    const { message, type } = body;
 
-    if (!clanId || !message) {
+    if (!message) {
       return NextResponse.json(
-        { error: 'Clan ID and message are required' },
+        { error: 'Message is required' },
         { status: 400 }
       );
     }
 
-    // Validate message type
     const messageType = type || MessageType.USER;
     if (!Object.values(MessageType).includes(messageType)) {
       return NextResponse.json({ error: 'Invalid message type' }, { status: 400 });
     }
 
-    // Only leaders can send announcements
     if (messageType === MessageType.ANNOUNCEMENT) {
-      const db = cachedDb!;
-      const clansCollection = db.collection('clans');
-      const clan = await clansCollection.findOne({ _id: clanId } as any);
-      
-      if (!clan) {
-        return NextResponse.json({ error: 'Clan not found' }, { status: 404 });
-      }
-
-      const member = clan.members.find((m: any) => m.playerId === playerId);
+      const member = clan.members.find((m: any) => m.playerId === auth.playerId);
       if (!member || member.role !== 'LEADER') {
         return NextResponse.json(
           { error: 'Only leaders can send announcements' },
@@ -196,8 +173,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Send message
-    const chatMessage = await sendMessage(clanId, playerId, message, messageType);
+    const chatMessage = await sendClanChatMessage(clanId, auth.playerId, message, messageType);
 
     return NextResponse.json({
       success: true,
@@ -206,7 +182,6 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('Error sending chat message:', error);
     
-    // Handle specific error cases
     if (error.message.includes('Recruits must wait')) {
       return NextResponse.json({ error: error.message }, { status: 403 });
     }
@@ -226,21 +201,35 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// ============================================================================
-// PUT - Edit Chat Message
-// ============================================================================
-
+/**
+ * PUT /api/clan/chat
+ * Edit own message (within 5 minute time limit)
+ * 
+ * @param request - NextRequest with authentication cookie and edit data in body
+ * @returns NextResponse with updated message
+ * 
+ * @example
+ * PUT /api/clan/chat
+ * Body: { messageId: "msg123", message: "Corrected message text" }
+ * Response: { success: true, message: { id: "msg123", content: "Corrected...", edited: true } }
+ * 
+ * @throws {400} Missing message ID or message text
+ * @throws {400} Message too long
+ * @throws {401} Unauthorized
+ * @throws {403} Can only edit your own messages
+ * @throws {403} Can only edit within 5 minutes
+ * @throws {500} Failed to edit message
+ */
 export async function PUT(request: NextRequest) {
   try {
-    await connectToDatabase();
+    const { client, db } = await getClientAndDatabase();
 
-    // Authenticate
-    const playerId = await verifyAuth(request);
-    if (!playerId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    const { auth } = result;
 
-    // Parse request body
+    initializeChatService(client, db);
+
     const body = await request.json();
     const { messageId, message } = body;
 
@@ -251,8 +240,7 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    // Edit message
-    const updatedMessage = await editMessage(messageId, playerId, message);
+    const updatedMessage = await editClanChatMessage(messageId, auth.playerId, message);
 
     return NextResponse.json({
       success: true,
@@ -261,7 +249,6 @@ export async function PUT(request: NextRequest) {
   } catch (error: any) {
     console.error('Error editing chat message:', error);
     
-    // Handle specific error cases
     if (error.message.includes('Can only edit your own')) {
       return NextResponse.json({ error: error.message }, { status: 403 });
     }
@@ -281,34 +268,43 @@ export async function PUT(request: NextRequest) {
   }
 }
 
-// ============================================================================
-// DELETE - Delete Chat Message
-// ============================================================================
-
+/**
+ * DELETE /api/clan/chat
+ * Delete a chat message (with moderation permissions)
+ * 
+ * @param request - NextRequest with authentication cookie and message ID in query
+ * @returns NextResponse with success confirmation
+ * 
+ * @example
+ * DELETE /api/clan/chat?messageId=msg123&clanId=abc123
+ * Response: { success: true, message: "Message deleted successfully" }
+ * 
+ * @throws {400} Missing message ID or clan ID
+ * @throws {401} Unauthorized
+ * @throws {403} Can only delete your own messages (unless officer/leader)
+ * @throws {500} Failed to delete message
+ */
 export async function DELETE(request: NextRequest) {
   try {
-    await connectToDatabase();
+    const { client, db } = await getClientAndDatabase();
 
-    // Authenticate
-    const playerId = await verifyAuth(request);
-    if (!playerId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    const { auth, clanId } = result;
 
-    // Extract query parameters
+    initializeChatService(client, db);
+
     const { searchParams } = new URL(request.url);
     const messageId = searchParams.get('messageId');
-    const clanId = searchParams.get('clanId');
 
-    if (!messageId || !clanId) {
+    if (!messageId) {
       return NextResponse.json(
-        { error: 'Message ID and Clan ID are required' },
+        { error: 'Message ID is required' },
         { status: 400 }
       );
     }
 
-    // Delete message
-    await deleteMessage(messageId, clanId, playerId);
+    await deleteClanChatMessage(messageId, clanId, auth.playerId);
 
     return NextResponse.json({
       success: true,
@@ -317,7 +313,6 @@ export async function DELETE(request: NextRequest) {
   } catch (error: any) {
     console.error('Error deleting chat message:', error);
     
-    // Handle specific error cases
     if (error.message.includes('Can only delete your own')) {
       return NextResponse.json({ error: error.message }, { status: 403 });
     }
@@ -330,3 +325,5 @@ export async function DELETE(request: NextRequest) {
 }
 
 export const runtime = 'edge';
+
+

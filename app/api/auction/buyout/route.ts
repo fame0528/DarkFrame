@@ -9,11 +9,23 @@
  * fee to seller. Creates trade history record. Automatically ends auction.
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createValidationErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+import { AuctionBuyoutSchema } from '@/lib/validation/schemas';
+import { ZodError } from 'zod';
 import { verifyAuth } from '@/lib/authMiddleware';
 import { buyoutAuction } from '@/lib/auctionService';
-import { BuyoutAuctionRequest } from '@/types/auction.types';
-import { logger } from '@/lib/logger';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.auctionBid);
 
 /**
  * POST /api/auction/buyout
@@ -41,51 +53,48 @@ import { logger } from '@/lib/logger';
  * - 400: Invalid buyout (self-purchase, no buyout price, insufficient funds, etc.)
  * - 500: Server error
  */
-export async function POST(request: Request) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AuctionBuyoutAPI');
+  const endTimer = log.time('auction-buyout');
+  
   try {
     // Verify authentication
     const authResult = await verifyAuth();
     if (!authResult || !authResult.username) {
-      return NextResponse.json(
-        { success: false, message: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     const username = authResult.username;
 
-    // Parse request body
-    const body: BuyoutAuctionRequest = await request.json();
-
     // Validate request
-    if (!body.auctionId) {
-      return NextResponse.json(
-        { success: false, message: 'Missing required field: auctionId' },
-        { status: 400 }
-      );
-    }
+    const validated = AuctionBuyoutSchema.parse(await request.json());
 
     // Execute buyout
-    const result = await buyoutAuction(username, body.auctionId);
+    const result = await buyoutAuction(username, validated.auctionId);
 
     if (!result.success) {
-      return NextResponse.json(result, { status: 400 });
+      return createErrorResponse(ErrorCode.AUCTION_BUYOUT_FAILED, {
+        message: result.message || 'Failed to buyout auction',
+        context: { auctionId: validated.auctionId },
+      });
     }
+
+    log.info('Auction buyout completed', { username, auctionId: validated.auctionId });
 
     return NextResponse.json(result);
 
   } catch (error) {
-    logger.error('Error in buyout auction API', error instanceof Error ? error : new Error(String(error)));
-    return NextResponse.json(
-      {
-        success: false,
-        message: 'Failed to buyout auction',
-        error: 'SERVER_ERROR'
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Error in buyout auction API', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

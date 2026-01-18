@@ -69,3 +69,60 @@ export { default as StatsViewWrapper } from './StatsViewWrapper';
 // Auto-Farm System Components (FID-20251019-001)
 export { default as AutoFarmPanel } from './AutoFarmPanel';
 export { default as AutoFarmStatsDisplay } from './AutoFarmStatsDisplay';
+
+// ============================================================================
+// TUTORIAL SYSTEM
+// ============================================================================
+
+// Re-export tutorial components
+export * from './tutorial';
+
+// ============================================================================
+// MESSAGING SYSTEM
+// ============================================================================
+
+// Re-export messaging components
+export * from './messaging';
+
+// ============================================================================
+// CHAT SYSTEM
+// ============================================================================
+
+// Re-export chat components
+export * from './chat';
+
+// ============================================================================
+// ADDITIONAL CORE COMPONENTS
+// ============================================================================
+
+// Navigation and layout
+export { default as TopNavBar } from './TopNavBar';
+export { ErrorBoundary, withErrorBoundary } from './ErrorBoundary';
+
+// Content and display
+export { SafeHtmlRenderer } from './SafeHtmlRenderer';
+
+// ============================================================================
+// WMD SYSTEM PANELS
+// ============================================================================
+
+// WMD system panels (exported individually - no subfolder index)
+export { default as WMDMissilePanel } from './WMDMissilePanel';
+export { default as WMDDefensePanel } from './WMDDefensePanel';
+export { default as WMDIntelligencePanel } from './WMDIntelligencePanel';
+export { default as WMDResearchPanel } from './WMDResearchPanel';
+export { default as WMDVotingPanel } from './WMDVotingPanel';
+
+// ============================================================================
+// ADDITIONAL COMPONENTS
+// ============================================================================
+
+// Referral system
+export { default as ReferralDashboard } from './ReferralDashboard';
+export { default as ReferralLeaderboard } from './ReferralLeaderboard';
+
+// Flag tracking
+export { default as FlagTrackerPanel } from './FlagTrackerPanel';
+
+// Hotkey manager
+export { default as HotkeyManagerPanel } from './HotkeyManagerPanel';

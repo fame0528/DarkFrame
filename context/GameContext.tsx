@@ -10,7 +10,7 @@
 
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { Player, Tile, MovementDirection } from '@/types';
 import { logger } from '@/lib/logger';
 
@@ -60,6 +60,10 @@ export function GameProvider({ children }: GameProviderProps) {
   const [currentTile, setCurrentTile] = useState<Tile | null>(null);
   const [isLoading, setIsLoading] = useState(true); // Start as true to check auth
   const [error, setError] = useState<string | null>(null);
+  
+  // Prevent duplicate API calls
+  const loadingRef = useRef(false);
+  const lastFetchRef = useRef<number>(0);
 
   /**
    * Check session with server (works with HttpOnly cookies)
@@ -68,22 +72,29 @@ export function GameProvider({ children }: GameProviderProps) {
   useEffect(() => {
     async function checkSession() {
       try {
+        console.log('[GameContext] 🔍 Starting session check...');
         logger.debug('Checking session');
         const response = await fetch('/api/auth/session');
+        console.log('[GameContext] ✅ Session response received:', response.status);
         const data = await response.json();
+        console.log('[GameContext] 📦 Session data:', data);
         
         logger.debug('Session response received', { success: data.success, hasUsername: !!data.username });
         
         if (data.success && data.username) {
           // Valid session found - load player data
+          console.log('[GameContext] ✅ Valid session, loading player data for:', data.username);
           logger.info('Valid session found', { username: data.username });
           await loadPlayerData(data.username);
+          console.log('[GameContext] ✅ loadPlayerData completed');
         } else {
           // No valid session - user needs to login
+          console.log('[GameContext] ⚠️ No valid session, stopping');
           logger.debug('No valid session, user needs to login');
           setIsLoading(false);
         }
       } catch (error) {
+        console.error('[GameContext] ❌ Session check failed:', error);
         logger.error('Session check failed', error instanceof Error ? error : new Error(String(error)));
         setIsLoading(false);
       }
@@ -107,29 +118,66 @@ export function GameProvider({ children }: GameProviderProps) {
    * Load player data from API
    */
   async function loadPlayerData(username: string) {
+    console.log('[loadPlayerData] 🚀 Called for username:', username);
+    // Prevent duplicate simultaneous calls
+    if (loadingRef.current) {
+      console.log('[loadPlayerData] ⏸️ Already loading, skipping');
+      logger.debug('Player data load already in progress, skipping');
+      return;
+    }
+    
+    // Throttle: Don't fetch more than once every 2 seconds
+    const now = Date.now();
+    if (now - lastFetchRef.current < 2000) {
+      console.log('[loadPlayerData] ⏱️ Throttled, skipping (last fetch:', (now - lastFetchRef.current), 'ms ago)');
+      logger.debug('Player data fetched recently, skipping');
+      return;
+    }
+    
+    loadingRef.current = true;
+    lastFetchRef.current = now;
     setIsLoading(true);
     setError(null);
 
     try {
+      console.log('[loadPlayerData] 📡 Fetching /api/player?username=' + username);
       const response = await fetch(`/api/player?username=${encodeURIComponent(username)}`);
+      console.log('[loadPlayerData] ✅ Player API responded:', response.status);
       const data = await response.json();
+      console.log('[loadPlayerData] 📦 Player data:', data);
 
       if (!data.success) {
-        throw new Error(data.error || 'Failed to load player data');
+        // API returns a structured error object: { code, message, details }
+        // Avoid throwing the object directly which results in `[object Object]`.
+        const apiError = data.error;
+        const errorMessage = typeof apiError === 'string'
+          ? apiError
+          : apiError && (apiError.message || apiError.code)
+            ? `${apiError.code ? apiError.code + ': ' : ''}${apiError.message || JSON.stringify(apiError)}`
+            : 'Failed to load player data';
+
+        throw new Error(errorMessage);
       }
 
+      console.log('[loadPlayerData] ✅ Setting player state');
       setPlayer(data.data);
 
       // Load current tile
       if (data.data.currentPosition) {
+        console.log('[loadPlayerData] 📍 Loading tile at position:', data.data.currentPosition);
         await loadTileData(data.data.currentPosition.x, data.data.currentPosition.y);
+        console.log('[loadPlayerData] ✅ Tile data loaded');
       }
+      console.log('[loadPlayerData] ✅ loadPlayerData complete');
     } catch (err) {
+      console.error('[loadPlayerData] ❌ Error:', err);
       logger.error('Error loading player data', err instanceof Error ? err : new Error(String(err)));
       setError(err instanceof Error ? err.message : 'Failed to load player');
       setPlayer(null);
     } finally {
+      console.log('[loadPlayerData] 🏁 Setting isLoading = false');
       setIsLoading(false);
+      loadingRef.current = false;
     }
   }
 

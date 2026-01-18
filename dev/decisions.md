@@ -201,4 +201,120 @@ Z X C    [SW] [S]  [SE]
 
 ---
 
-**Last Updated:** 2025-10-17
+### [DEC-015] Stripe for Payment Processing
+**Date:** 2025-10-24  
+**Context:** Need payment processor for VIP subscriptions and monetization  
+**Decision:** Use Stripe as primary payment processor  
+**Rationale:**  
+- Industry-standard payment platform (trusted by millions)
+- Excellent developer experience with comprehensive SDKs
+- Built-in subscription management (recurring billing, proration, etc.)
+- Webhook system for automated event handling
+- PCI compliance handled by Stripe (reduces liability)
+- Customer portal for self-service cancellation/management
+- Supports multiple currencies and payment methods  
+**Implementation:**  
+- `stripe` SDK v17.5.0 for server-side operations
+- `@stripe/stripe-js` v5.1.0 for client-side checkout
+- Webhook endpoint with signature verification
+- 5 pricing tiers (Weekly to Yearly)  
+**Alternatives Considered:**  
+1. PayPal (rejected - inferior subscription management)
+2. Square (rejected - focused on physical retail)
+3. Paddle (rejected - higher fees, less flexible)
+4. Manual payment handling (rejected - PCI compliance nightmare)  
+**Business Benefits:**  
+- Automated subscription management (zero manual intervention)
+- Professional checkout UX
+- Reduced churn with customer portal
+- Comprehensive analytics in Stripe Dashboard  
+**Status:** ✅ Implemented (FID-20251024-STRIPE)
+
+---
+
+### [DEC-016] Tiered VIP Pricing Strategy
+**Date:** 2025-10-24  
+**Context:** Determine optimal pricing structure for VIP subscriptions  
+**Decision:** Implement 5-tier pricing with increasing value propositions  
+**Pricing Structure:**  
+- Weekly: $9.99 (all VIP benefits)
+- Monthly: $19.99 (all + 2x RP multiplier)
+- Quarterly: $49.99 (all + 2x RP + 10% resource boost)
+- Biannual: $89.99 (all + 2x RP + 15% boost + exclusive units)
+- Yearly: $199.99 (all + 3x RP + 25% boost + exclusive units + cosmetics)  
+**Rationale:**  
+- **Price Anchoring:** Weekly plan makes monthly feel reasonable
+- **Volume Discounts:** Longer subscriptions have better $/day value
+- **Progressive Benefits:** Higher tiers unlock exclusive features (units, cosmetics)
+- **Psychological Pricing:** $X.99 pricing proven to increase conversions
+- **Flexibility:** Caters to casual (weekly) and hardcore (yearly) players  
+**Value Calculation:**  
+- Weekly: $1.43/day
+- Monthly: $0.67/day (53% savings vs weekly)
+- Quarterly: $0.55/day (61% savings)
+- Biannual: $0.50/day (65% savings)
+- Yearly: $0.55/day (61% savings) + exclusive benefits  
+**Alternatives Considered:**  
+1. Single monthly price (rejected - leaves money on table)
+2. Free tier with limited benefits (rejected - devalues VIP)
+3. Usage-based pricing (rejected - too complex)  
+**Status:** ✅ Implemented (FID-20251024-STRIPE)
+
+---
+
+### [DEC-017] Referral System - Progressive Rewards with VIP Cap
+**Date:** 2025-10-24  
+**Context:** Design referral reward structure that incentivizes recruiting without breaking economy  
+**Decision:** Progressive scaling with hard caps and milestone bonuses  
+**Reward Structure:**  
+- **Base:** 10k metal/energy, 15 RP, 2k XP, 1 VIP day per referral
+- **Progressive:** 1.05x multiplier per referral (caps at 2.0x on 15th)
+- **VIP Cap:** 30 days total lifetime (prevents subscription cannibalization)
+- **Milestones:** 8 bonuses at 1, 3, 5, 10, 15, 25, 50, 100 referrals
+- **Total Value (100 referrals):** ~5M resources, ~15k RP, 30 VIP days  
+**Rationale:**  
+- **Progressive Scaling:** Encourages continued recruiting (each referral worth more)
+- **VIP Cap:** Protects subscription revenue (can't earn unlimited free VIP)
+- **RP Balance:** 15k RP = 0.55% of WMD tree (meaningful but not game-breaking)
+- **Milestones:** Create psychological hooks ("just 2 more for next milestone")
+- **Anti-Abuse:** 7-day + 4 login validation prevents fake accounts  
+**Economic Impact Analysis:**  
+- **Best Case (100 referrals):** ~5M resources ≈ 1 week of active farming
+- **RP Impact:** 15k ≈ 2-3 mid-tier WMD techs (significant but not overpowered)
+- **VIP Value:** 30 days ≈ $20 value (acceptable CAC for organic users)  
+**Alternatives Considered:**  
+1. Flat rewards (rejected - no incentive for volume)
+2. Unlimited VIP (rejected - kills subscription revenue)
+3. Cash rewards (rejected - legal complications)  
+**Anti-Abuse Measures:**  
+- IP tracking (max 3 accounts per IP per code)
+- 7-day + 4 login validation requirement
+- Admin flagging and manual review
+- Temporary email domain blocking  
+**Status:** ✅ Implemented (FID-20251024-001)
+
+---
+
+### [DEC-018] Daily Cron Validation vs Real-Time
+**Date:** 2025-10-24  
+**Context:** When should referrals be validated and rewards distributed?  
+**Decision:** Daily automated cron job for validation (not real-time)  
+**Rationale:**  
+- **Fraud Prevention:** 7-day delay allows time to detect abuse patterns
+- **Server Load:** Batch processing more efficient than real-time checks
+- **Database Consistency:** Single daily process reduces race conditions
+- **Admin Review:** Flagged referrals can be reviewed before rewards distributed  
+**Implementation:**  
+- Cron script runs daily at 3 AM server time
+- Validates referrals older than 7 days with 4+ logins
+- Auto-invalidates failed referrals
+- Comprehensive logging for audit trail  
+**Alternatives Considered:**  
+1. Real-time validation on 4th login (rejected - abuse window)
+2. Manual admin validation only (rejected - too labor intensive)
+3. Instant rewards on signup (rejected - fraud risk)  
+**Status:** ✅ Implemented (FID-20251024-001)
+
+---
+
+**Last Updated:** 2025-10-26

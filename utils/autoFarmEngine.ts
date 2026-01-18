@@ -41,6 +41,7 @@ import {
 type EventCallback = (event: AutoFarmEvent) => void;
 type StatsCallback = (stats: AutoFarmSessionStats) => void;
 type StateCallback = (state: AutoFarmState) => void;
+type RefreshCallback = () => Promise<void>;
 
 /**
  * Auto-Farm Engine
@@ -60,6 +61,7 @@ export class AutoFarmEngine {
   private onEventCallback: EventCallback | null = null;
   private onStatsCallback: StatsCallback | null = null;
   private onStateCallback: StateCallback | null = null;
+  private onRefreshCallback: RefreshCallback | null = null;
   
   // Constants
   private readonly MAP_WIDTH = GAME_CONSTANTS.MAP_WIDTH;
@@ -129,6 +131,13 @@ export class AutoFarmEngine {
    */
   onState(callback: StateCallback): void {
     this.onStateCallback = callback;
+  }
+
+  /**
+   * Register refresh callback (for updating UI after harvests)
+   */
+  onRefresh(callback: RefreshCallback): void {
+    this.onRefreshCallback = callback;
   }
 
   /**
@@ -419,10 +428,18 @@ export class AutoFarmEngine {
     }
 
     console.log('[AutoFarm] Scheduling next tile in', this.MOVEMENT_DELAY, 'ms');
-    // Schedule next tile
-    this.timerId = setTimeout(() => {
-      this.processNextTile();
-    }, this.MOVEMENT_DELAY);
+    
+    // Wait for the movement delay before processing next tile
+    // This ensures tiles are processed sequentially with proper spacing
+    await new Promise(resolve => setTimeout(resolve, this.MOVEMENT_DELAY));
+    
+    // Only schedule next tile if still active (could have been stopped during delay)
+    if (this.state.status === AutoFarmStatus.ACTIVE) {
+      // Use setImmediate-style scheduling to avoid deep recursion
+      this.timerId = setTimeout(() => {
+        this.processNextTile();
+      }, 0);
+    }
   }
 
   /**
@@ -488,12 +505,11 @@ export class AutoFarmEngine {
       // Step 1: Move to position
       const moveSuccess = await this.moveToPosition(position);
       if (!moveSuccess) {
-        this.updateStats({ errorsEncountered: this.stats.errorsEncountered + 1 });
         return {
           success: false,
           position,
           action: 'skipped',
-          error: 'Failed to move to position'
+          error: 'Failed to move to position after retries'
         };
       }
 
@@ -561,8 +577,8 @@ export class AutoFarmEngine {
   }
 
   /**
-   * Move to specified position
-   * Calculates direction and calls /api/move
+   * Move to specified position with direct API call verification
+   * Calls /api/game/move directly and verifies response
    */
   private async moveToPosition(position: { x: number; y: number }): Promise<boolean> {
     try {
@@ -574,41 +590,135 @@ export class AutoFarmEngine {
       
       // Map direction to keyboard keys (QWEASDZXC layout)
       let movementKey: string;
-      if (dy < 0 && dx === 0) movementKey = 'w';        // North
-      else if (dy < 0 && dx > 0) movementKey = 'e';     // Northeast
-      else if (dy === 0 && dx > 0) movementKey = 'd';   // East
-      else if (dy > 0 && dx > 0) movementKey = 'c';     // Southeast
-      else if (dy > 0 && dx === 0) movementKey = 'x';   // South
-      else if (dy > 0 && dx < 0) movementKey = 'z';     // Southwest
-      else if (dy === 0 && dx < 0) movementKey = 'a';   // West
-      else if (dy < 0 && dx < 0) movementKey = 'q';     // Northwest
-      else {
+      let direction: string;
+      if (dy < 0 && dx === 0) {
+        movementKey = 'w';
+        direction = 'N';
+      } else if (dy < 0 && dx > 0) {
+        movementKey = 'e';
+        direction = 'NE';
+      } else if (dy === 0 && dx > 0) {
+        movementKey = 'd';
+        direction = 'E';
+      } else if (dy > 0 && dx > 0) {
+        movementKey = 'c';
+        direction = 'SE';
+      } else if (dy > 0 && dx === 0) {
+        movementKey = 'x';
+        direction = 'S';
+      } else if (dy > 0 && dx < 0) {
+        movementKey = 'z';
+        direction = 'SW';
+      } else if (dy === 0 && dx < 0) {
+        movementKey = 'a';
+        direction = 'W';
+      } else if (dy < 0 && dx < 0) {
+        movementKey = 'q';
+        direction = 'NW';
+      } else {
         // Already at target position
         return true;
       }
       
-      console.log(`[AutoFarm] Simulating movement keypress '${movementKey}' from (${current.x}, ${current.y}) to (${position.x}, ${position.y})`);
+      console.log(`[AutoFarm] Moving ${movementKey} (${direction}) from (${current.x}, ${current.y}) to (${position.x}, ${position.y})`);
       
-      // Simulate the keypress - this triggers existing MovementControls.tsx logic
-      this.simulateKeyPress(movementKey);
+      // Get username from localStorage (same as harvest verification)
+      const username = localStorage.getItem('darkframe_username');
+      if (!username) {
+        console.error('[AutoFarm] No username found for movement');
+        return false;
+      }
       
-      // Wait for movement to complete
-      await new Promise(resolve => setTimeout(resolve, this.MOVEMENT_WAIT));
+      const requestBody = { 
+        username: username,
+        direction: direction  // Use cardinal direction (N, E, S, W, etc.) not keyboard key
+      };
       
-      // Update internal position state (the actual game state is updated by movePlayer)
-      this.updateState({ currentPosition: position });
+      console.log('[AutoFarm] Movement request body:', requestBody);
       
-      // Emit move event
-      this.emitEvent({
-        type: 'move',
-        timestamp: Date.now(),
-        position: position,
-        message: `Moved to (${position.x}, ${position.y}) via '${movementKey}' keypress`
+      // Call move API directly instead of simulating keypress
+      const response = await fetch('/api/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody)
       });
       
-      return true;
+      if (!response.ok) {
+        console.error(`[AutoFarm] Move API returned ${response.status}`);
+        return false;
+      }
+      
+      const data = await response.json();
+      
+      console.log('[AutoFarm] Move API response:', JSON.stringify(data, null, 2));
+      
+      if (!data.success) {
+        console.error(`[AutoFarm] Move failed: ${data.error || 'Unknown error'}`);
+        return false;
+      }
+      
+      // Verify we moved to the expected position
+      // Try multiple paths to extract position from response
+      // IMPORTANT: Move API returns { success: true, data: { player: {...}, currentTile: {...} } }
+      // Position is at data.player.currentPosition (NOT data.data.player.currentPosition)
+      let newPos;
+      if (data.player?.currentPosition) {
+        newPos = data.player.currentPosition;
+        console.log('[AutoFarm] Extracted position from data.player.currentPosition:', newPos);
+      } else if (data.data?.player?.currentPosition) {
+        newPos = data.data.player.currentPosition;
+        console.log('[AutoFarm] Extracted position from data.data.player.currentPosition (fallback):', newPos);
+      } else if (data.data?.newPosition) {
+        newPos = data.data.newPosition;
+        console.log('[AutoFarm] Extracted position from data.data.newPosition (fallback):', newPos);
+      } else if (data.newPosition) {
+        newPos = data.newPosition;
+        console.log('[AutoFarm] Extracted position from data.newPosition (fallback):', newPos);
+      } else {
+        console.error('[AutoFarm] Could not extract position from response. Response structure:', {
+          hasData: !!data.data,
+          hasPlayer: !!data.player,
+          hasPlayerCurrentPosition: !!data.player?.currentPosition,
+          dataPlayerExists: !!data.data?.player,
+          dataPlayerCurrentPosition: !!data.data?.player?.currentPosition,
+          dataKeys: data.data ? Object.keys(data.data) : [],
+          playerKeys: data.player ? Object.keys(data.player) : [],
+          topLevelKeys: Object.keys(data)
+        });
+      }
+      
+      if (newPos && newPos.x === position.x && newPos.y === position.y) {
+        console.log(`[AutoFarm] Move verified: Server confirms position (${newPos.x}, ${newPos.y})`);
+        // Update internal position state
+        this.updateState({ currentPosition: position });
+        // Emit move event
+        this.emitEvent({
+          type: 'move',
+          timestamp: Date.now(),
+          position: position,
+          message: `Moved to (${position.x}, ${position.y}) via API call`
+        });
+        return true;
+      } else {
+        // Enhanced logging: Log full response and newPos for diagnostics
+        console.error(`[AutoFarm] Position mismatch: Expected (${position.x}, ${position.y}), got`, newPos);
+        console.error('[AutoFarm] Full move API response:', JSON.stringify(data, null, 2));
+        // Log additional diagnostic info
+        console.error('[AutoFarm] Diagnostic keys:', {
+          hasData: !!data.data,
+          hasPlayer: !!data.player,
+          hasPlayerCurrentPosition: !!data.player?.currentPosition,
+          dataPlayerExists: !!data.data?.player,
+          dataPlayerCurrentPosition: !!data.data?.player?.currentPosition,
+          dataKeys: data.data ? Object.keys(data.data) : [],
+          playerKeys: data.player ? Object.keys(data.player) : [],
+          topLevelKeys: Object.keys(data)
+        });
+        return false;
+      }
       
     } catch (error) {
+      console.error('[AutoFarm] Move error:', error);
       this.emitEvent({
         type: 'error',
         timestamp: Date.now(),
@@ -677,6 +787,10 @@ export class AutoFarmEngine {
     window.dispatchEvent(event);
   }
 
+  /**
+   * Attempt to harvest resources with actual server verification
+   * Waits for player resources to update confirming harvest succeeded
+   */
   private async attemptHarvest(position: { x: number; y: number }, tileInfo: any): Promise<any> {
     try {
       // Check if tile has harvestable resources
@@ -692,36 +806,105 @@ export class AutoFarmEngine {
       
       console.log(`[AutoFarm] Simulating keypress '${harvestKey}' for ${tileInfo.terrain} harvest at (${position.x}, ${position.y})`);
       
-      // Simulate the keypress - this triggers existing HarvestButton.tsx logic
+      // Get current resources before harvest for verification
+      const username = localStorage.getItem('darkframe_username');
+      if (!username) {
+        console.error('[AutoFarm] No username found for harvest verification');
+        return { success: false, reason: 'No username' };
+      }
+      
+      let initialResources = { metal: 0, energy: 0 };
+      
+      try {
+        const response = await fetch(`/api/player?username=${encodeURIComponent(username)}`);
+        const data = await response.json();
+        if (data.success && data.data.resources) {
+          initialResources = data.data.resources;
+          console.log(`[AutoFarm] Pre-harvest resources: Metal=${initialResources.metal}, Energy=${initialResources.energy}`);
+        }
+      } catch (error) {
+        console.warn('[AutoFarm] Failed to get initial resources:', error);
+        return { success: false, reason: 'Could not load initial resources' };
+      }
+      
+      // Simulate the keypress - this triggers the harvest API call
       this.simulateKeyPress(harvestKey);
       
-      // Wait for harvest animation/processing to complete
-      await new Promise(resolve => setTimeout(resolve, this.HARVEST_WAIT));
+      // Wait for the harvest to process and verify resources increased
+      // Poll player data until resources update or timeout
+      const maxAttempts = 15; // 15 attempts * 200ms = 3 second timeout (harvest cooldown)
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        
+        try {
+          const response = await fetch(`/api/player?username=${encodeURIComponent(username)}`);
+          const data = await response.json();
+          
+          if (data.success && data.data.resources) {
+            const currentResources = data.data.resources;
+            
+            // Check if resources increased (either metal or energy)
+            const metalGained = currentResources.metal - initialResources.metal;
+            const energyGained = currentResources.energy - initialResources.energy;
+            
+            if (metalGained > 0 || energyGained > 0) {
+              console.log(`[AutoFarm] Harvest verified: Gained Metal=${metalGained}, Energy=${energyGained}`);
+              
+              // Emit harvest event
+              this.emitEvent({
+                type: 'harvest',
+                timestamp: Date.now(),
+                position,
+                data: {
+                  terrain: tileInfo.terrain,
+                  method: 'keypress_simulation',
+                  key: harvestKey,
+                  verified: true,
+                  metalGained,
+                  energyGained
+                },
+                message: `Harvested ${tileInfo.terrain}: +${metalGained} Metal, +${energyGained} Energy`
+              });
+              
+              // Add extra delay for VIP/Basic cooldown respect
+              if (this.HARVEST_DELAY_EXTRA > 0) {
+                await new Promise(resolve => setTimeout(resolve, this.HARVEST_DELAY_EXTRA));
+              }
+              
+              // Trigger UI refresh to update resource display AFTER delays complete
+              if (this.onRefreshCallback) {
+                try {
+                  await this.onRefreshCallback();
+                  console.log('[AutoFarm] UI refreshed after harvest');
+                } catch (refreshError) {
+                  console.warn('[AutoFarm] UI refresh failed:', refreshError);
+                }
+              }
+              
+              return { 
+                success: true, 
+                method: 'keypress_simulation',
+                terrain: tileInfo.terrain,
+                metalGained,
+                energyGained
+              };
+            }
+          }
+        } catch (pollError) {
+          console.warn(`[AutoFarm] Harvest verification attempt ${attempt + 1} failed:`, pollError);
+        }
+      }
       
-      // VIP vs Basic tier: Add extra delay for basic users to guarantee cooldown respect
+      // Timeout - harvest didn't complete (likely on cooldown or no resources)
+      console.warn(`[AutoFarm] Harvest verification timeout: Resources did not increase for ${tileInfo.terrain}`);
+      
+      // This is not an error - tile might be depleted or on cooldown
+      // Still add the extra delay for Basic mode cooldown respect
       if (this.HARVEST_DELAY_EXTRA > 0) {
         await new Promise(resolve => setTimeout(resolve, this.HARVEST_DELAY_EXTRA));
       }
       
-      // Emit harvest event (actual stats will be updated by the game's harvest handlers)
-      this.emitEvent({
-        type: 'harvest',
-        timestamp: Date.now(),
-        position,
-        data: {
-          terrain: tileInfo.terrain,
-          method: 'keypress_simulation',
-          key: harvestKey
-        },
-        message: `Triggered harvest for ${tileInfo.terrain} (simulated '${harvestKey}' keypress)`
-      });
-      
-      // Return success - actual harvest result is handled by the game's UI
-      return { 
-        success: true, 
-        method: 'keypress_simulation',
-        terrain: tileInfo.terrain 
-      };
+      return { success: false, reason: 'Harvest timeout (cooldown or depleted)' };
       
     } catch (error) {
       this.emitEvent({

@@ -48,36 +48,51 @@ import {
   calculateUpgradeCost,
   getFactoryStats,
   canUpgradeFactory,
+  getFactoryDefense,
   FACTORY_UPGRADE
 } from '@/lib/factoryUpgradeService';
 import { Factory } from '@/types/game.types';
 import { awardXP, XPAction } from '@/lib/xpService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  FactoryUpgradeSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
 
-export async function POST(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.factoryBuild);
+
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('FactoryUpgradeAPI');
+  const endTimer = log.time('upgradeFactory');
+  
   try {
     // Verify authentication
     const authResult = await verifyAuth();
     if (!authResult || !authResult.username) {
-      return NextResponse.json(
-        { success: false, error: 'Authentication required' },
-        { status: 401 }
-      );
+      log.warn('Unauthenticated factory upgrade attempt');
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED);
     }
 
     const username = authResult.username;
 
-    // Parse request body
+    // Parse and validate request body
     const body = await request.json();
-    const { factoryX, factoryY } = body;
+    const validated = FactoryUpgradeSchema.parse(body);
 
-    // Validate coordinates
-    if (typeof factoryX !== 'number' || typeof factoryY !== 'number') {
-      return NextResponse.json(
-        { success: false, error: 'Invalid factory coordinates' },
-        { status: 400 }
-      );
-    }
+    log.debug('Factory upgrade request', { 
+      username, 
+      factoryX: validated.factoryX, 
+      factoryY: validated.factoryY 
+    });
 
+    // Connect to database
     // Connect to database
     const db = await connectToDatabase();
     const factoriesCollection = db.collection<Factory>('factories');
@@ -85,23 +100,31 @@ export async function POST(request: NextRequest) {
 
     // Find the factory
     const factory = await factoriesCollection.findOne({
-      x: factoryX,
-      y: factoryY
+      x: validated.factoryX,
+      y: validated.factoryY
     });
 
     if (!factory) {
-      return NextResponse.json(
-        { success: false, error: 'Factory not found at these coordinates' },
-        { status: 404 }
-      );
+      log.warn('Factory not found', { 
+        username, 
+        x: validated.factoryX, 
+        y: validated.factoryY 
+      });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: 'Factory not found at these coordinates'
+      });
     }
 
     // Verify ownership
     if (factory.owner !== username) {
-      return NextResponse.json(
-        { success: false, error: 'You do not own this factory' },
-        { status: 403 }
-      );
+      log.warn('Factory ownership violation', { 
+        username, 
+        owner: factory.owner, 
+        location: `(${validated.factoryX}, ${validated.factoryY})` 
+      });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: 'You do not own this factory'
+      });
     }
 
     // Initialize level if missing (backwards compatibility)
@@ -109,22 +132,23 @@ export async function POST(request: NextRequest) {
 
     // Check if already at max level
     if (currentLevel >= FACTORY_UPGRADE.MAX_LEVEL) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Factory is already at maximum level (${FACTORY_UPGRADE.MAX_LEVEL})`
-        },
-        { status: 400 }
-      );
+      log.warn('Factory already at max level', { 
+        username, 
+        currentLevel, 
+        maxLevel: FACTORY_UPGRADE.MAX_LEVEL 
+      });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: `Factory is already at maximum level (${FACTORY_UPGRADE.MAX_LEVEL})`
+      });
     }
 
     // Get player's current resources
     const player = await playersCollection.findOne({ username });
     if (!player) {
-      return NextResponse.json(
-        { success: false, error: 'Player not found' },
-        { status: 404 }
-      );
+      log.warn('Player not found', { username });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: 'Player not found'
+      });
     }
 
     const playerMetal = player.resources?.metal || 0;
@@ -141,15 +165,16 @@ export async function POST(request: NextRequest) {
     );
 
     if (!affordabilityCheck.canUpgrade) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: affordabilityCheck.reason || 'Cannot upgrade factory',
-          cost: upgradeCost,
-          playerResources: { metal: playerMetal, energy: playerEnergy }
-        },
-        { status: 400 }
-      );
+      log.warn('Insufficient resources for upgrade', { 
+        username, 
+        cost: upgradeCost, 
+        playerResources: { metal: playerMetal, energy: playerEnergy } 
+      });
+      return createErrorResponse(ErrorCode.INSUFFICIENT_RESOURCES, {
+        message: affordabilityCheck.reason || 'Cannot upgrade factory',
+        cost: upgradeCost,
+        playerResources: { metal: playerMetal, energy: playerEnergy }
+      });
     }
 
     // Calculate new stats for next level
@@ -171,19 +196,21 @@ export async function POST(request: NextRequest) {
     );
 
     if (playerUpdateResult.modifiedCount === 0) {
-      return NextResponse.json(
-        { success: false, error: 'Failed to deduct resources' },
-        { status: 500 }
-      );
+      log.error('Failed to deduct resources', new Error('Database update failed'), { username });
+      return createErrorResponse(ErrorCode.INTERNAL_ERROR, {
+        message: 'Failed to deduct resources'
+      });
     }
 
     // Update factory level and max slots
     // Note: Current slots are not changed, only max capacity
+    // Defense is recalculated based on new level
     const factoryUpdateResult = await factoriesCollection.updateOne(
-      { x: factoryX, y: factoryY },
+      { x: validated.factoryX, y: validated.factoryY },
       {
         $set: {
           level: newLevel,
+          defense: getFactoryDefense(newLevel), // Update defense to match new level
           // Don't modify current slots, just the capacity increases
           lastSlotRegen: now // Reset regen timer for new rate
         }
@@ -202,16 +229,19 @@ export async function POST(request: NextRequest) {
         }
       );
 
-      return NextResponse.json(
-        { success: false, error: 'Failed to upgrade factory' },
-        { status: 500 }
-      );
+      log.error('Failed to upgrade factory', new Error('Database update failed'), { 
+        username, 
+        factoryLocation: `(${validated.factoryX}, ${validated.factoryY})` 
+      });
+      return createErrorResponse(ErrorCode.INTERNAL_ERROR, {
+        message: 'Failed to upgrade factory'
+      });
     }
 
     // Fetch updated factory
     const updatedFactory = await factoriesCollection.findOne({
-      x: factoryX,
-      y: factoryY
+      x: validated.factoryX,
+      y: validated.factoryY
     });
 
     // Fetch updated player resources
@@ -219,6 +249,13 @@ export async function POST(request: NextRequest) {
 
     // Award XP for factory upgrade
     const xpResult = await awardXP(username, XPAction.FACTORY_UPGRADE);
+
+    log.info('Factory upgraded successfully', { 
+      username, 
+      newLevel, 
+      factoryLocation: `(${validated.factoryX}, ${validated.factoryY})`,
+      cost: upgradeCost 
+    });
 
     return NextResponse.json({
       success: true,
@@ -239,17 +276,17 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Factory upgrade error:', error);
-    return NextResponse.json(
-      {
-        success: false,
-        error: 'An unexpected error occurred while upgrading factory',
-        details: error instanceof Error ? error.message : 'Unknown error'
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      log.warn('Factory upgrade validation failed', { issues: error.issues });
+      return createValidationErrorResponse(error);
+    }
+
+    log.error('Factory upgrade error', error as Error);
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * IMPLEMENTATION NOTES:

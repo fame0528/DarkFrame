@@ -7,17 +7,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
 import { getAuthenticatedUser } from '@/lib/authService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 /**
  * GET /api/admin/rp-economy/top-players
  * Returns top RP earners and spenders
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/rp-economy/top-players');
+  const endTimer = log.time('get-top-players');
+
   try {
     // Verify admin authentication
     const adminUser = await getAuthenticatedUser();
     if (!adminUser?.isAdmin) {
-      return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED);
     }
 
     const searchParams = request.nextUrl.searchParams;
@@ -87,7 +101,7 @@ export async function GET(request: NextRequest) {
     const playerVIPMap = new Map(
       players.map((p: any) => [
         p.username,
-        !!(p.isVIP && p.vipExpiresAt && new Date(p.vipExpiresAt) > new Date())
+        !!(p.vip && p.vipExpiration && new Date(p.vipExpiration) > new Date())
       ])
     );
 
@@ -104,10 +118,18 @@ export async function GET(request: NextRequest) {
       isVIP: playerVIPMap.get(item._id) || false
     }));
 
+    log.info('Top players retrieved', {
+      topEarnersCount: topEarners.length,
+      topSpendersCount: topSpenders.length,
+      period,
+    });
+
     return NextResponse.json({ topEarners, topSpenders });
 
   } catch (error) {
-    console.error('Error fetching top players:', error);
-    return NextResponse.json({ error: 'Failed to fetch top players' }, { status: 500 });
+    log.error('Failed to fetch top players', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

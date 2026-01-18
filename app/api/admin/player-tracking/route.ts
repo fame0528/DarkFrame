@@ -23,6 +23,17 @@ import {
   getTotalSessionTime,
   getSessionCount,
 } from '@/lib/sessionTracker';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 /**
  * GET /api/admin/player-tracking?period=24h&userId=PlayerOne
@@ -48,15 +59,15 @@ import {
  * @example
  * GET /api/admin/player-tracking?period=24h&sortBy=sessionTime&limit=20
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/player-tracking');
+  const endTimer = log.time('get-player-tracking');
+
   try {
     const user = await getAuthenticatedUser();
 
     if (!user || (user.rank ?? 0) < 5) {
-      return NextResponse.json(
-        { success: false, error: 'Admin access required (rank 5+)' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, 'Admin access required (rank 5+)');
     }
 
     const searchParams = request.nextUrl.searchParams;
@@ -142,6 +153,13 @@ export async function GET(request: NextRequest) {
     // Apply limit if showing all players
     const limitedData = userId ? trackingData : trackingData.slice(0, limit);
 
+    log.info('Player tracking retrieved', {
+      period,
+      totalPlayers: trackingData.length,
+      returnedCount: limitedData.length,
+      sortBy,
+    });
+
     return NextResponse.json({
       success: true,
       period,
@@ -149,13 +167,12 @@ export async function GET(request: NextRequest) {
       totalPlayers: trackingData.length,
     });
   } catch (error) {
-    console.error('Player tracking API error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch player tracking data' },
-      { status: 500 }
-    );
+    log.error('Failed to fetch player tracking data', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

@@ -15,32 +15,11 @@
 
 import { NextRequest } from 'next/server';
 import { jwtVerify } from 'jose';
-import { MongoClient, Db } from 'mongodb';
+import { Db } from 'mongodb';
 
-const MONGODB_URI = process.env.MONGODB_URI!;
 const JWT_SECRET = new TextEncoder().encode(
   process.env.JWT_SECRET || 'fallback-secret-key'
 );
-
-let cachedClient: MongoClient | null = null;
-let cachedDb: Db | null = null;
-
-/**
- * Connect to MongoDB with caching
- */
-export async function connectToDatabase(): Promise<{ client: MongoClient; db: Db }> {
-  if (cachedClient && cachedDb) {
-    return { client: cachedClient, db: cachedDb };
-  }
-
-  const client = await MongoClient.connect(MONGODB_URI);
-  const db = client.db('darkframe');
-
-  cachedClient = client;
-  cachedDb = db;
-
-  return { client, db };
-}
 
 /**
  * Extract and verify JWT from cookies

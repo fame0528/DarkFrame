@@ -1,136 +1,92 @@
 /**
  * 📅 Created: 2025-01-18
+ * 📅 Updated: 2025-10-25 (FID-20251025-001: Smart Beer Base Spawning + Admin Integration)
  * 🎯 OVERVIEW:
  * Beer Base Respawn Admin Endpoint
  * 
- * Allows administrators to force respawn all beer bases on the map.
- * Beer bases are special bot structures that provide beer resources.
- * This endpoint deletes existing beer bases and creates new ones
- * based on current bot population and configuration.
+ * Allows administrators to manually trigger Beer Base respawn.
+ * Uses the NEW Beer Base service (player documents with isSpecialBase flag).
  * 
  * POST /api/admin/beer-bases/respawn
- * - Requires admin access (rank >= 5)
- * - Returns count of beer bases created
+ * Rate Limited: 30 req/hour (admin bot management)
+ * - Requires admin access (isAdmin: true)
+ * - Returns count of Beer Bases created
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authService';
-import clientPromise from '@/lib/mongodb';
+import { manualBeerBaseRespawn } from '@/lib/beerBaseService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 
-export async function POST(req: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.adminBot);
+
+export const POST = withRequestLogging(rateLimiter(async (req: NextRequest) => {
+  const log = createRouteLogger('AdminBeerBaseRespawnAPI');
+  const endTimer = log.time('beer-base-respawn');
+
   try {
     // Admin authentication check
     const user = await getAuthenticatedUser();
-    if (!user || !user.rank || user.rank < 5) {
-      return NextResponse.json(
-        { success: false, error: 'Admin access required' },
-        { status: 403 }
-      );
-    }
-
-    const client = await clientPromise;
-    const db = client.db('game');
-    const players = db.collection('players');
-    const tiles = db.collection('tiles');
-    const config = db.collection('botConfig');
-
-    // Get bot config to determine beer base percentage
-    const botConfig = await config.findOne({});
-    const beerBasePercent = botConfig?.beerBasePercent || 0.07;
-
-    // Delete all existing beer bases (bot-owned bases)
-    const deleteResult = await tiles.deleteMany({ 
-      terrain: 'Base',
-      owner: { $regex: /^BOT_/i }
-    });
-
-    // Count all bots
-    const botCount = await players.countDocuments({
-      username: { $regex: /^BOT_/i }
-    });
-
-    // Calculate number of beer bases to create
-    const beerBaseCount = Math.floor(botCount * beerBasePercent);
-
-    // Get random bots to place beer bases
-    const bots = await players
-      .find({ username: { $regex: /^BOT_/i } })
-      .limit(beerBaseCount)
-      .toArray();
-
-    // Create beer bases at bot positions
-    let createdCount = 0;
-    for (const bot of bots) {
-      const botData = bot as any;
-      
-      // Check if there's already a tile at this position
-      const existingTile = await tiles.findOne({ 
-        x: botData.position?.x || 0, 
-        y: botData.position?.y || 0 
+    if (!user || !user.isAdmin) {
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin access required',
       });
-
-      if (existingTile) {
-        // Update existing tile to beer base
-        await tiles.updateOne(
-          { x: botData.position?.x || 0, y: botData.position?.y || 0 },
-          { 
-            $set: { 
-              terrain: 'Base',
-              owner: botData.username,
-              beerProduction: 5 // Base beer production rate
-            } 
-          }
-        );
-      } else {
-        // Create new beer base tile
-        await tiles.insertOne({
-          x: botData.position?.x || 0,
-          y: botData.position?.y || 0,
-          terrain: 'Base',
-          owner: botData.username,
-          beerProduction: 5,
-          createdAt: new Date()
-        });
-      }
-      createdCount++;
     }
+
+    // Trigger manual Beer Base respawn using NEW service
+    const result = await manualBeerBaseRespawn();
+
+    if (!result.success) {
+      return createErrorResponse(ErrorCode.INTERNAL_ERROR, {
+        message: 'Beer Base respawn failed',
+      });
+    }
+
+    log.info('Beer bases respawned successfully', {
+      removed: result.removed,
+      spawned: result.spawned,
+      adminUser: user.username,
+    });
 
     return NextResponse.json({
       success: true,
-      count: createdCount,
-      deleted: deleteResult.deletedCount,
-      totalBots: botCount,
-      message: `Respawned ${createdCount} beer bases (${(beerBasePercent * 100).toFixed(1)}% of ${botCount} bots)`
+      count: result.spawned,
+      removed: result.removed,
+      message: `Respawned ${result.spawned} Beer Bases (removed ${result.removed} old ones)`
     });
 
   } catch (error) {
-    console.error('Beer base respawn error:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to respawn beer bases'
-      },
-      { status: 500 }
-    );
+    log.error('Failed to respawn beer bases', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * 📝 IMPLEMENTATION NOTES:
- * - Beer bases are bot-owned base tiles that produce beer resources
- * - Uses beerBasePercent from bot config to determine quantity
- * - Deletes old beer bases before creating new ones
- * - Places beer bases at random bot positions
- * - Default beer production rate: 5 per hour
+ * - Uses NEW Beer Base service (player documents with isSpecialBase: true)
+ * - Removes all existing Beer Bases and spawns fresh ones
+ * - Smart spawning: Analyzes active player levels to spawn appropriate tiers
+ * - Respects Beer Base config from gameConfig collection
+ * - Admin can trigger at any time (not just Sunday 4 AM)
  * 
  * 🔐 SECURITY:
- * - Admin-only access (rank >= 5 required)
+ * - Admin-only access (isAdmin: true required)
  * - Validates user authentication
- * - Safe deletion using MongoDB filters
+ * - Rate limited to prevent abuse
  * 
  * 🚀 FUTURE ENHANCEMENTS:
- * - Configurable beer production rates
- * - Strategic placement based on bot specialization
- * - Beer base upgrade system
- * - Beer base defense mechanisms
+ * - Preview mode (show what would be spawned without spawning)
+ * - Partial respawn (spawn only deficit, don't delete existing)
+ * - Tier-specific respawn (respawn only certain power tiers)
+ * - Scheduled respawn trigger (admin can schedule future respawns)
  */

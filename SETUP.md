@@ -42,7 +42,24 @@ mongodb://localhost:27017/darkframe
 Edit `.env.local` and add your MongoDB URI:
 ```env
 MONGODB_URI=mongodb+srv://username:password@cluster.xxxxx.mongodb.net/darkframe
+
+# Redis (Optional - recommended for production)
+# Development: Leave unset or use local Redis
+REDIS_URL=redis://localhost:6379
+
+# Production: Use TLS connection
+# REDIS_URL=rediss://username:password@host:port
+
+# Upstash Redis (serverless - easiest for production)
+# UPSTASH_REDIS_REST_URL=https://your-endpoint.upstash.io
+# UPSTASH_REDIS_REST_TOKEN=your-token-here
 ```
+
+**Redis Setup (Optional):**
+- **Development:** App works without Redis (uses in-memory fallback)
+- **Production:** Recommended for rate limiting persistence
+- **Quick Start:** Sign up at https://upstash.com (free tier) for serverless Redis
+- **Local:** Install Redis from https://github.com/microsoftarchive/redis/releases
 
 ### Step 3: Initialize Map
 

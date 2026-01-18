@@ -19,6 +19,7 @@
 
 import { useState, useEffect } from 'react';
 import { useGameContext } from '@/context/GameContext';
+import { isTypingInInput } from '@/hooks/useKeyboardShortcut';
 
 interface ScannedBot {
   username: string;
@@ -75,16 +76,21 @@ export default function BotScannerPanel() {
     }
   }, [player]);
 
-  // Keyboard handler for "B" key
+  // Keyboard shortcut
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in an input
+      if (isTypingInInput()) {
+        return;
+      }
+      
       if (e.key === 'b' || e.key === 'B') {
         if (status?.unlocked) {
           setIsOpen(prev => !prev);
         }
       }
       
-      // ESC to close
+      // ESC to close (allow even in inputs for convenience)
       if (e.key === 'Escape') {
         setIsOpen(false);
       }

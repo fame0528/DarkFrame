@@ -9,6 +9,7 @@
 import React, { useEffect } from 'react';
 import { useGameContext } from '@/context/GameContext';
 import { MovementDirection, KeyToDirection } from '@/types';
+import { isTypingInInput } from '@/hooks/useKeyboardShortcut';
 
 export default function MovementControls() {
   const { movePlayer, isLoading } = useGameContext();
@@ -18,6 +19,11 @@ export default function MovementControls() {
    */
   useEffect(() => {
     function handleKeyPress(event: KeyboardEvent) {
+      // Ignore if typing in input field
+      if (isTypingInInput()) {
+        return;
+      }
+
       const direction = KeyToDirection[event.key];
       if (direction && !isLoading) {
         console.log(`[MovementControls] Received '${event.key}' keypress - moving ${direction}`);

@@ -20,7 +20,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAuth } from '@/lib/authMiddleware';
-import { getPlayerBattleLogs } from '@/lib/battleService';
+import { getPlayerCombatHistory } from '@/lib/battleService';
 
 export async function GET(request: NextRequest) {
   try {
@@ -62,7 +62,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Fetch battle logs
-    const logs = await getPlayerBattleLogs(username, limit);
+    const logs = await getPlayerCombatHistory(username, limit);
 
     return NextResponse.json({
       success: true,

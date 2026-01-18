@@ -34,7 +34,7 @@ import {
   calculateCumulativeCost,
   FACTORY_UPGRADE
 } from '@/lib/factoryUpgradeService';
-import { applySlotRegeneration, getTimeUntilNextSlot } from '@/lib/slotRegenService';
+import { applySlotRegeneration, getTimeUntilNextSlot, getAvailableSlots } from '@/lib/slotRegenService';
 import { Factory, EnhancedFactory, FactoryStats } from '@/types/game.types';
 
 /**
@@ -52,7 +52,12 @@ interface FactoryResponse {
     slotsRequired: number;
   };
   availableSlots: number;
-  timeUntilNextSlot: number;
+  timeUntilNextSlot: {
+    hours: number;
+    minutes: number;
+    seconds: number;
+    totalMs: number;
+  };
 }
 
 export async function GET(request: NextRequest) {
@@ -99,11 +104,11 @@ export async function GET(request: NextRequest) {
       const currentLevel = factory.level || 1;
       const stats = getFactoryStats(currentLevel);
       
-      // Apply slot regeneration before returning
-      applySlotRegeneration(factory);
+      // Apply slot regeneration before returning (use updated instance)
+      const regenFactory = applySlotRegeneration(factory);
       
       // Calculate time until next slot
-      const timeUntilNext = getTimeUntilNextSlot(factory);
+      const timeUntilNext = getTimeUntilNextSlot(regenFactory);
       
       // Calculate upgrade info
       let upgradeCost = null;
@@ -122,22 +127,22 @@ export async function GET(request: NextRequest) {
       }
       
       // Build upgrade progress object with all required fields
-      const upgradePercentage = getUpgradeProgress(factory);
+      const upgradePercentage = getUpgradeProgress(regenFactory);
       const upgradeProgress = {
         level: currentLevel,
         percentage: upgradePercentage,
-        slotsUsed: factory.usedSlots,
+        slotsUsed: regenFactory.usedSlots,
         slotsRequired: stats.maxSlots // FactoryStats uses maxSlots, not slots
       };
       
       return {
-        factory,
+        factory: regenFactory,
         stats,
         upgradeCost,
         canUpgrade,
         upgradeProgress,
-        availableSlots: factory.slots - factory.usedSlots,
-        timeUntilNextSlot: timeUntilNext.totalMs // Convert object to milliseconds number
+        availableSlots: getAvailableSlots(regenFactory),
+        timeUntilNextSlot: timeUntilNext // Return full object with hours, minutes, seconds, totalMs
       };
     });
 

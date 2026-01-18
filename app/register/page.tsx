@@ -85,7 +85,11 @@ export default function RegisterPage() {
         console.log('✅ Registration successful, redirecting to game...');
         router.push('/game');
       } else {
-        setError(data.error || 'Registration failed');
+        // Extract message from error object (API returns {code, message, timestamp, stack})
+        const errorMessage = typeof data.error === 'object' && data.error?.message 
+          ? data.error.message 
+          : (typeof data.error === 'string' ? data.error : 'Registration failed');
+        setError(errorMessage);
       }
     } catch (err) {
       console.error('❌ Registration error:', err);

@@ -24,6 +24,7 @@
 
 import { useEffect, useState } from 'react';
 import { RankedPlayer } from '@/lib/rankingService';
+import { formatNumber } from '@/utils/formatting';
 
 /**
  * Leaderboard API response interface
@@ -97,13 +98,6 @@ export default function LeaderboardView() {
   const filteredLeaderboard = leaderboardData?.leaderboard.filter(player =>
     player.username.toLowerCase().includes(searchQuery.toLowerCase())
   ) || [];
-  
-  /**
-   * Format number with commas
-   */
-  const formatNumber = (num: number): string => {
-    return num.toLocaleString();
-  };
   
   /**
    * Get rank display with medal emojis
@@ -270,12 +264,15 @@ export default function LeaderboardView() {
               <th className="px-6 py-3 text-center text-xs font-medium text-gray-300 uppercase tracking-wider">
                 Balance
               </th>
+              <th className="px-6 py-3 text-center text-xs font-medium text-gray-300 uppercase tracking-wider">
+                Referrals
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-700">
             {filteredLeaderboard.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-6 py-8 text-center text-gray-400">
+                <td colSpan={6} className="px-6 py-8 text-center text-gray-400">
                   {searchQuery ? 'No players found matching your search' : 'No players yet'}
                 </td>
               </tr>
@@ -326,6 +323,17 @@ export default function LeaderboardView() {
                       <div className="text-xs text-gray-500">
                         {(player.balanceMultiplier * 100).toFixed(0)}%
                       </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-center">
+                      <span className="text-purple-400 font-semibold">
+                        {player.validatedReferrals !== undefined ? (
+                          <>
+                            🎁 {player.validatedReferrals}
+                          </>
+                        ) : (
+                          <span className="text-gray-500">—</span>
+                        )}
+                      </span>
                     </td>
                   </tr>
                 );

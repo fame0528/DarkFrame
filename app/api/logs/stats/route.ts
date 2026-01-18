@@ -19,7 +19,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/authMiddleware';
 import { getActivityLogStats, getActionCountForPeriod } from '@/lib/activityLogService';
-import { getBattleLogStats, getPlayerCombatStats } from '@/lib/battleLogService';
+import { getBattleLogStats, getPlayerCombatStatistics } from '@/lib/battleLogService';
 
 /**
  * GET /api/logs/stats
@@ -148,7 +148,7 @@ export async function GET(req: NextRequest) {
         });
         
         // Get combat stats for player
-        const combatStats = await getPlayerCombatStats(playerId);
+        const combatStats = await getPlayerCombatStatistics(playerId);
         
         return NextResponse.json({
           success: true,

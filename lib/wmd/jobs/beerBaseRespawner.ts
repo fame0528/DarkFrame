@@ -124,14 +124,40 @@ export async function beerBaseRespawner(db: Db): Promise<number> {
       return 0; // Population at or above target
     }
     
+    // SAFETY CAP #1: Never spawn more than 100 Beer Bases in a single cycle
+    // This prevents catastrophic spawn events if calculation goes wrong
+    const safeDeficit = Math.min(deficit, 100);
+    
+    // SAFETY CAP #2: Double-check we're not over absolute max (1000 total)
+    const absoluteMax = 1000;
+    if (currentCount >= absoluteMax) {
+      console.warn('[BeerBase] ⚠️ Already at absolute maximum (1000), skipping spawn');
+      return 0;
+    }
+    
+    // SAFETY CAP #3: Don't exceed absolute max with this spawn
+    const allowedToSpawn = Math.min(safeDeficit, absoluteMax - currentCount);
+    
+    if (allowedToSpawn <= 0) {
+      console.warn('[BeerBase] ⚠️ Spawn would exceed safety limits, skipping', {
+        current: currentCount,
+        target: targetCount,
+        deficit,
+        absoluteMax,
+      });
+      return 0;
+    }
+    
     console.log('[BeerBase] 🍺 Population deficit detected, spawning Beer Bases...', {
       current: currentCount,
       target: targetCount,
       deficit,
+      safeDeficit,
+      allowedToSpawn,
     });
     
-    // Spawn Beer Bases to reach target
-    const spawned = await spawnBeerBases(deficit);
+    // Spawn Beer Bases to reach target (with safety caps applied)
+    const spawned = await spawnBeerBases(allowedToSpawn);
     
     console.log('[BeerBase] ✅ Population maintenance complete!', {
       spawned: spawned.length,

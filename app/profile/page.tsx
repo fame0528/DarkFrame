@@ -16,6 +16,7 @@ import { useGameContext } from '@/context/GameContext';
 import BackButton from '@/components/BackButton';
 import { RichTextEditor } from '@/components/ui';
 import { SafeHtmlRenderer } from '@/components/SafeHtmlRenderer';
+import Link from 'next/link';
 
 interface ProfilePageProps {
   embedded?: boolean; // When true, renders without standalone page wrapper
@@ -45,6 +46,13 @@ interface ProfileData {
     description: string;
     unlockedAt: string;
   }>;
+  referralStats?: {
+    totalReferrals: number;
+    validatedReferrals: number;
+    badges: string[];
+    titles: string[];
+    nextMilestone: number | null;
+  };
   joinedAt: string;
 }
 
@@ -167,6 +175,94 @@ export default function ProfilePage({ embedded = false }: ProfilePageProps = {})
                 </div>
               </div>
             </div>
+
+            {/* Referral Stats */}
+            {profileData.referralStats && (
+              <div className="bg-gradient-to-r from-purple-900/30 to-pink-900/30 border-2 border-purple-500/50 rounded-lg p-6">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-2xl font-bold text-purple-400">🎁 Referral Program</h2>
+                  <Link 
+                    href="/referrals"
+                    className="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg font-semibold transition-colors text-sm"
+                  >
+                    View Dashboard →
+                  </Link>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                  <div className="bg-gray-900/50 p-4 rounded-lg">
+                    <p className="text-gray-400 text-sm">Total Referrals</p>
+                    <p className="text-2xl font-bold text-cyan-400">{profileData.referralStats.totalReferrals}</p>
+                  </div>
+                  <div className="bg-gray-900/50 p-4 rounded-lg">
+                    <p className="text-gray-400 text-sm">Validated</p>
+                    <p className="text-2xl font-bold text-green-400">{profileData.referralStats.validatedReferrals}</p>
+                  </div>
+                  <div className="bg-gray-900/50 p-4 rounded-lg">
+                    <p className="text-gray-400 text-sm">Badges</p>
+                    <p className="text-2xl font-bold text-yellow-400">{profileData.referralStats.badges.length}</p>
+                  </div>
+                  <div className="bg-gray-900/50 p-4 rounded-lg">
+                    <p className="text-gray-400 text-sm">Next Milestone</p>
+                    <p className="text-2xl font-bold text-purple-400">
+                      {profileData.referralStats.nextMilestone ?? '—'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Badges & Titles */}
+                {(profileData.referralStats.badges.length > 0 || profileData.referralStats.titles.length > 0) && (
+                  <div className="bg-gray-900/50 p-4 rounded-lg">
+                    {profileData.referralStats.titles.length > 0 && (
+                      <div className="mb-3">
+                        <p className="text-sm text-gray-400 mb-2">Titles:</p>
+                        <div className="flex flex-wrap gap-2">
+                          {profileData.referralStats.titles.map((title, index) => (
+                            <span
+                              key={index}
+                              className="px-3 py-1 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-full text-sm font-semibold"
+                            >
+                              {title}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {profileData.referralStats.badges.length > 0 && (
+                      <div>
+                        <p className="text-sm text-gray-400 mb-2">Badges:</p>
+                        <div className="flex flex-wrap gap-2">
+                          {profileData.referralStats.badges.map((badge, index) => (
+                            <span
+                              key={index}
+                              className="px-3 py-1 bg-gradient-to-r from-yellow-600 to-orange-600 text-white rounded-full text-sm font-semibold"
+                            >
+                              {badge.replace('_recruiter', '').toUpperCase()}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* CTA if no referrals yet */}
+                {profileData.referralStats.totalReferrals === 0 && (
+                  <div className="bg-purple-800/30 border border-purple-500/50 rounded-lg p-4 text-center">
+                    <p className="text-purple-300 mb-2">
+                      Start inviting friends to earn exclusive rewards, resources, and prestige!
+                    </p>
+                    <Link 
+                      href="/referrals"
+                      className="inline-block bg-purple-600 hover:bg-purple-500 text-white px-6 py-2 rounded-lg font-semibold transition-colors"
+                    >
+                      Get Started →
+                    </Link>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Resources */}
             <div className="bg-gray-800 rounded-lg p-6 border-2 border-cyan-500/30">

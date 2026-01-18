@@ -1,76 +1,66 @@
 /**
- * Clan Research Unlock API Route
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/research/unlock/route.ts
+ * @created 2025-10-18
+ * @updated 2025-10-23 (FID-20251023-001: Refactored to use centralized auth + JSDoc)
  * 
  * OVERVIEW:
- * POST endpoint for unlocking research nodes in clan tech tree.
- * Only Leader, Co-Leader, and Officer roles can unlock research.
- * Validates prerequisites, level requirements, and RP cost.
+ * Clan research unlock endpoint. Unlocks research nodes in clan tech tree.
+ * Validates prerequisites, level requirements, and RP cost before unlocking.
  * 
- * Features:
- * - Research node unlocking with prerequisite validation
- * - Permission checking (Leader/Co-Leader/Officer only)
- * - Clan level requirement validation
- * - RP balance checking and deduction
- * - Returns total bonuses after unlock
- * - Activity logging for research unlocks
+ * ROUTES:
+ * - POST /api/clan/research/unlock - Unlock research node
  * 
- * Integration:
- * - JWT authentication required
- * - Updates clan.research.researchPoints (deduct cost)
- * - Updates clan.research.unlockedResearch (add node ID)
- * - Logs to clan_activities collection
+ * AUTHENTICATION:
+ * - Requires clan membership via requireClanMembership()
  * 
- * @module app/api/clan/research/unlock/route
+ * BUSINESS RULES:
+ * - Only Leader, Co-Leader, and Officer can unlock research
+ * - Must meet prerequisite research requirements
+ * - Must meet clan level requirements
+ * - Must have sufficient clan RP for cost
+ * - All unlocks logged to activity feed
+ * - Updates total clan bonuses after unlock
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import clientPromise from '@/lib/mongodb';
+import { getClientAndDatabase, requireClanMembership } from '@/lib';
 import { unlockResearch, initializeClanResearchService } from '@/lib/clanResearchService';
-
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'your-secret-key-min-32-chars-long!!'
-);
 
 /**
  * POST /api/clan/research/unlock
  * Unlock a research node in the clan tech tree
  * 
- * Request body:
- * - researchId: string (research node ID to unlock)
+ * @param request - NextRequest with authentication cookie and research ID in body
+ * @returns NextResponse with unlocked research details and updated bonuses
  * 
- * Response:
- * - success: boolean
- * - research: ResearchNode (unlocked research details)
- * - totalBonuses: Record<string, number> (updated total bonuses)
- * - message: string
+ * @example
+ * POST /api/clan/research/unlock
+ * Body: { researchId: "resource_efficiency_1" }
+ * Response: { success: true, research: {...}, totalBonuses: { harvestBonus: 5 }, message: "Successfully unlocked..." }
  * 
- * Errors:
- * - 401: No authentication
- * - 403: Insufficient permissions (not Leader/Officer)
- * - 400: Invalid researchId, already unlocked, prerequisites not met,
- *        insufficient RP, level requirement not met
- * - 404: Player not found, research not found
- * - 500: Server error
+ * @throws {400} Research ID required
+ * @throws {400} Already unlocked
+ * @throws {400} Prerequisites not met
+ * @throws {400} Insufficient research points
+ * @throws {400} Level requirement not met
+ * @throws {401} Unauthorized
+ * @throws {403} Insufficient permissions (Leader/Officer only)
+ * @throws {404} Research not found
+ * @throws {500} Failed to unlock research
  */
 export async function POST(request: NextRequest) {
   try {
-    // Authenticate user
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const { client, db } = await getClientAndDatabase();
 
-    const verified = await jwtVerify(token, JWT_SECRET);
-    const username = verified.payload.username as string;
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    const { auth, clanId } = result;
 
-    // Get request body
+    initializeClanResearchService(client, db);
+
     const body = await request.json();
     const { researchId } = body;
 
-    // Validate researchId
     if (!researchId || typeof researchId !== 'string') {
       return NextResponse.json(
         { error: 'Research ID is required' },
@@ -78,37 +68,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get database
-    const client = await clientPromise;
-    const db = client.db(process.env.MONGODB_DB || 'darkframe');
-    initializeClanResearchService(client, db);
-
-    // Get player
-    const player = await db.collection('players').findOne({ username });
-    if (!player) {
-      return NextResponse.json({ error: 'Player not found' }, { status: 404 });
-    }
-
-    // Check if player is in a clan
-    if (!player.clanId) {
-      return NextResponse.json(
-        { error: 'You are not in a clan' },
-        { status: 400 }
-      );
-    }
-
-    // Unlock research
     try {
-      const result = await unlockResearch(player.clanId, username, researchId);
+      const unlockResult = await unlockResearch(clanId, auth.username, researchId);
 
       return NextResponse.json({
         success: true,
-        research: result.research,
-        totalBonuses: result.totalBonuses,
-        message: `Successfully unlocked ${result.research.name}`,
+        research: unlockResult.research,
+        totalBonuses: unlockResult.totalBonuses,
+        message: `Successfully unlocked ${unlockResult.research.name}`,
       });
     } catch (err: any) {
-      // Handle specific errors
       if (err.message.includes('not found')) {
         return NextResponse.json(
           { error: 'Research node not found' },
@@ -151,7 +120,7 @@ export async function POST(request: NextRequest) {
           { status: 400 }
         );
       }
-      throw err; // Re-throw unexpected errors
+      throw err;
     }
   } catch (error: any) {
     console.error('Error unlocking research:', error);

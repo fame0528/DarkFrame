@@ -29,6 +29,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { formatDate } from '@/utils/formatting';
 
 /**
  * Achievement stats data structure
@@ -161,16 +162,11 @@ export default function AchievementStatsModal({ onClose }: AchievementStatsModal
   };
 
   /**
-   * Format date
+   * Format date for achievements
    */
-  const formatDate = (isoString?: string): string => {
+  const formatAchievementDate = (isoString?: string): string => {
     if (!isoString) return 'Never';
-    const date = new Date(isoString);
-    return date.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric'
-    });
+    return formatAchievementDate(isoString);
   };
 
   /**
@@ -380,8 +376,8 @@ export default function AchievementStatsModal({ onClose }: AchievementStatsModal
                     {/* Dates */}
                     <div>
                       <p className="text-xs text-gray-500">First/Last Unlock</p>
-                      <p className="text-gray-300 text-sm">{formatDate(stat.firstUnlock)}</p>
-                      <p className="text-gray-400 text-xs">{formatDate(stat.lastUnlock)}</p>
+                      <p className="text-gray-300 text-sm">{formatAchievementDate(stat.firstUnlock)}</p>
+                      <p className="text-gray-400 text-xs">{formatAchievementDate(stat.lastUnlock)}</p>
                     </div>
                   </div>
                 </div>
@@ -431,3 +427,4 @@ export default function AchievementStatsModal({ onClose }: AchievementStatsModal
  * - Memoized calculations for top/rarest lists
  * - Optimized re-renders with React.useMemo
  */
+

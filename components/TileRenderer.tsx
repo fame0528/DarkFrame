@@ -33,6 +33,8 @@ interface TileRendererProps {
   onAttackClick?: () => void;
   isAttacking?: boolean;
   onFlagAttack?: (bearer: FlagBearer) => void;
+  onBankClick?: () => void;
+  onShrineClick?: () => void;
 }
 
 /**
@@ -83,7 +85,7 @@ function getTerrainDescription(
   return getConsistentTileMessage(terrain, x, y, bankType);
 }
 
-export default function TileRenderer({ tile, harvestResult, factoryData, attackResult, flagBearer, onDiscovery, onHarvestClick, isHarvesting, onAttackClick, isAttacking, onFlagAttack }: TileRendererProps) {
+export default function TileRenderer({ tile, harvestResult, factoryData, attackResult, flagBearer, onDiscovery, onHarvestClick, isHarvesting, onAttackClick, isAttacking, onFlagAttack, onBankClick, onShrineClick }: TileRendererProps) {
   const { player, refreshGameState } = useGameContext();
   const router = useRouter();
   
@@ -95,18 +97,69 @@ export default function TileRenderer({ tile, harvestResult, factoryData, attackR
   const [factoryImageError, setFactoryImageError] = React.useState(false);
   const [isLoading, setIsLoading] = React.useState(true);
   
-  // Check if flag bearer is at this tile
-  const isFlagBearerHere = flagBearer && 
-    tile.x === flagBearer.position.x && 
-    tile.y === flagBearer.position.y;
+  // Check if current player is the flag bearer
+  const isCurrentPlayerBearer = flagBearer && player && (
+    flagBearer.username === player.username
+  );
   
-  // Check if this tile is in the flag bearer's trail
-  const trailEntry = flagBearer?.trail?.find(t => t.x === tile.x && t.y === tile.y);
-  const isInTrail = !!trailEntry && !isFlagBearerHere;
+  // Check if flag bearer is at this tile (from tile data or flagBearer prop)
+  const isFlagBearerHere = tile.hasFlagBearer || (flagBearer && 
+    tile.x === flagBearer.position.x && 
+    tile.y === flagBearer.position.y);
+  
+  // Check if this tile has the flag bearer's trail (from tile data)
+  const isInTrail = tile.hasTrail && !isFlagBearerHere;
   
   // Calculate trail age (for fade effect)
-  const trailAge = trailEntry ? (Date.now() - new Date(trailEntry.timestamp).getTime()) / (8 * 60 * 1000) : 0; // 0-1 (0=fresh, 1=expired)
-  const trailOpacity = isInTrail ? Math.max(0.2, 1 - trailAge) : 0;
+  const trailAge = tile.trailTimestamp ? 
+    (Date.now() - new Date(tile.trailTimestamp).getTime()) / (8 * 60 * 1000) : 0; // 0-1 (0=fresh, 1=expired)
+  
+  // CRITICAL VISIBILITY: Fresh trails = 100% opacity, fades to 40% over 8 minutes
+  // This is the PRIMARY tracking method for flag bearer (Tier 0 - FREE)
+  const trailOpacity = isInTrail ? Math.max(0.4, 1 - trailAge * 0.6) : 0;
+  
+  // Farmability helpers
+  const isTileFarmable = (terrain: TerrainType): boolean => {
+    return terrain === TerrainType.Metal || 
+           terrain === TerrainType.Energy || 
+           terrain === TerrainType.Cave || 
+           terrain === TerrainType.Forest;
+  };
+  
+  const isPlayerOnCooldown = (): boolean => {
+    if (!player || !tile.lastHarvestedBy) return false;
+    return tile.lastHarvestedBy.some(record => record.playerId === player.username);
+  };
+  
+  const getCooldownTimeRemaining = (): string => {
+    if (!isPlayerOnCooldown()) return '';
+    
+    // Calculate time until reset based on tile X coordinate
+    // Tiles 1-75 reset at midnight, 76-150 reset at noon
+    const now = new Date();
+    const nextReset = new Date(now);
+    
+    if (tile.x >= 1 && tile.x <= 75) {
+      // Reset at midnight
+      nextReset.setHours(24, 0, 0, 0);
+    } else {
+      // Reset at noon
+      nextReset.setHours(12, 0, 0, 0);
+      if (nextReset <= now) {
+        nextReset.setDate(nextReset.getDate() + 1);
+      }
+    }
+    
+    const msRemaining = nextReset.getTime() - now.getTime();
+    const hours = Math.floor(msRemaining / (1000 * 60 * 60));
+    const minutes = Math.floor((msRemaining % (1000 * 60 * 60)) / (1000 * 60));
+    
+    if (hours > 0) {
+      return `${hours}h ${minutes}m until reset`;
+    } else {
+      return `${minutes}m until reset`;
+    }
+  };
   
   // Calculate distance to flag bearer for proximity effects
   const distanceToFlagBearer = flagBearer ? 
@@ -317,6 +370,27 @@ export default function TileRenderer({ tile, harvestResult, factoryData, attackR
           />
         )}
 
+        {/* Farmability Indicator Badge */}
+        {isTileFarmable(tile.terrain) && (
+          <div className="absolute top-2 right-2 z-20">
+            {isPlayerOnCooldown() ? (
+              <div 
+                className="bg-red-600 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg cursor-help" 
+                title={getCooldownTimeRemaining()}
+              >
+                ON COOLDOWN
+              </div>
+            ) : (
+              <div 
+                className="bg-green-600 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg cursor-help" 
+                title="Ready to Harvest"
+              >
+                READY
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Base Indicator Badge */}
         {tile.occupiedByBase && (
           <div className="absolute top-4 right-4 bg-green-600 text-white px-3 py-1 rounded-full text-sm font-bold shadow-lg z-20">
@@ -340,115 +414,158 @@ export default function TileRenderer({ tile, harvestResult, factoryData, attackR
           </div>
         )}
 
-        {/* Flag Bearer Indicator with Animated Effects */}
+        {/* Flag Bearer Indicator with Animated Effects - Reduced for bearer */}
         {isFlagBearerHere && flagBearer && (
           <>
-            {/* ENHANCED Pulsing Glow Effect - Multiple Layers */}
+            {/* Pulsing Glow Effect - Subtle for bearer, full for others */}
             <div className="absolute inset-0 z-30 pointer-events-none">
-              <div className="absolute inset-0 bg-gradient-to-r from-yellow-500/50 via-orange-500/50 to-red-500/50 animate-pulse"></div>
-              <div className="absolute inset-0 bg-gradient-to-br from-yellow-400/40 via-transparent to-orange-400/40 animate-pulse" style={{ animationDelay: '0.5s' }}></div>
-              <div className="absolute inset-0 bg-gradient-radial from-yellow-500/60 via-orange-500/40 to-transparent animate-pulse" style={{ animationDelay: '0.25s' }}></div>
-              {/* MASSIVELY ENHANCED Border Glow */}
-              <div className="absolute inset-0 border-8 border-yellow-400 animate-pulse shadow-[0_0_80px_rgba(250,204,21,1),0_0_120px_rgba(251,191,36,0.8),0_0_160px_rgba(234,179,8,0.6),inset_0_0_60px_rgba(250,204,21,0.4)]"></div>
-              <div className="absolute inset-0 border-4 border-orange-500 animate-pulse shadow-[0_0_60px_rgba(249,115,22,0.9)]" style={{ animationDelay: '0.3s' }}></div>
+              {isCurrentPlayerBearer ? (
+                <>
+                  {/* Minimal effects when you're the bearer */}
+                  <div className="absolute inset-0 bg-gradient-radial from-yellow-400/15 via-orange-400/8 to-transparent"></div>
+                  <div className="absolute inset-0 border-2 border-yellow-400/40 shadow-[0_0_20px_rgba(250,204,21,0.3)]"></div>
+                </>
+              ) : (
+                <>
+                  {/* Full effects when viewing another bearer */}
+                  <div className="absolute inset-0 bg-gradient-to-r from-yellow-500/50 via-orange-500/50 to-red-500/50 animate-pulse"></div>
+                  <div className="absolute inset-0 bg-gradient-to-br from-yellow-400/40 via-transparent to-orange-400/40 animate-pulse" style={{ animationDelay: '0.5s' }}></div>
+                  <div className="absolute inset-0 bg-gradient-radial from-yellow-500/60 via-orange-500/40 to-transparent animate-pulse" style={{ animationDelay: '0.25s' }}></div>
+                  <div className="absolute inset-0 border-8 border-yellow-400 animate-pulse shadow-[0_0_80px_rgba(250,204,21,1),0_0_120px_rgba(251,191,36,0.8),0_0_160px_rgba(234,179,8,0.6),inset_0_0_60px_rgba(250,204,21,0.4)]"></div>
+                  <div className="absolute inset-0 border-4 border-orange-500 animate-pulse shadow-[0_0_60px_rgba(249,115,22,0.9)]" style={{ animationDelay: '0.3s' }}></div>
+                </>
+              )}
             </div>
             
-            {/* MASSIVELY INCREASED Floating Particles - Covering Entire Tile */}
+            {/* Floating Particles - Minimal for bearer, full for others */}
             <div className="absolute inset-0 z-30 pointer-events-none overflow-hidden">
-              {/* Layer 1: Bottom particles (40 particles) */}
-              {[...Array(40)].map((_, i) => (
-                <div
-                  key={`bottom-${i}`}
-                  className="absolute w-3 h-3 bg-yellow-400 rounded-full animate-float opacity-80 shadow-[0_0_10px_rgba(250,204,21,0.8)]"
-                  style={{
-                    left: `${(i * 2.5) % 100}%`,
-                    bottom: `${(i % 4) * 8}%`,
-                    animationDelay: `${i * 0.1}s`,
-                    animationDuration: '3s'
-                  }}
-                ></div>
-              ))}
-              
-              {/* Layer 2: Middle particles (40 particles) */}
-              {[...Array(40)].map((_, i) => (
-                <div
-                  key={`middle-${i}`}
-                  className="absolute w-2.5 h-2.5 bg-orange-400 rounded-full animate-float opacity-75 shadow-[0_0_8px_rgba(251,146,60,0.8)]"
-                  style={{
-                    left: `${((i * 2.5) + 1.25) % 100}%`,
-                    bottom: `${((i % 4) * 8) + 35}%`,
-                    animationDelay: `${i * 0.12}s`,
-                    animationDuration: '3.5s'
-                  }}
-                ></div>
-              ))}
-              
-              {/* Layer 3: Top particles (40 particles) */}
-              {[...Array(40)].map((_, i) => (
-                <div
-                  key={`top-${i}`}
-                  className="absolute w-2 h-2 bg-red-400 rounded-full animate-float opacity-70 shadow-[0_0_6px_rgba(248,113,113,0.8)]"
-                  style={{
-                    left: `${((i * 2.5) + 0.5) % 100}%`,
-                    bottom: `${((i % 4) * 8) + 70}%`,
-                    animationDelay: `${i * 0.15}s`,
-                    animationDuration: '4s'
-                  }}
-                ></div>
-              ))}
-              
-              {/* Layer 4: Scattered sparkles (30 particles) */}
-              {[...Array(30)].map((_, i) => (
-                <div
-                  key={`sparkle-${i}`}
-                  className="absolute w-1.5 h-1.5 bg-white rounded-full animate-float opacity-90 shadow-[0_0_12px_rgba(255,255,255,1)]"
-                  style={{
-                    left: `${Math.random() * 100}%`,
-                    bottom: `${Math.random() * 100}%`,
-                    animationDelay: `${i * 0.08}s`,
-                    animationDuration: `${2.5 + Math.random()}s`
-                  }}
-                ></div>
-              ))}
-              
-              {/* Layer 5: Large glowing orbs (15 particles) */}
-              {[...Array(15)].map((_, i) => (
-                <div
-                  key={`orb-${i}`}
-                  className="absolute w-6 h-6 bg-gradient-to-br from-yellow-300 to-orange-400 rounded-full animate-float opacity-60 blur-sm shadow-[0_0_20px_rgba(250,204,21,1)]"
-                  style={{
-                    left: `${(i * 7) % 100}%`,
-                    bottom: `${(i * 11) % 100}%`,
-                    animationDelay: `${i * 0.2}s`,
-                    animationDuration: '5s'
-                  }}
-                ></div>
-              ))}
+              {isCurrentPlayerBearer ? (
+                <>
+                  {/* Just a few subtle particles when you're the bearer */}
+                  {[...Array(10)].map((_, i) => (
+                    <div
+                      key={`subtle-${i}`}
+                      className="absolute w-1.5 h-1.5 bg-yellow-400/40 rounded-full animate-float shadow-[0_0_6px_rgba(250,204,21,0.3)]"
+                      style={{
+                        left: `${(i * 10) % 100}%`,
+                        bottom: `${(i * 10) % 100}%`,
+                        animationDelay: `${i * 0.2}s`,
+                        animationDuration: '4s'
+                      }}
+                    ></div>
+                  ))}
+                </>
+              ) : (
+                <>
+                  {/* Full particle layers when viewing another bearer */}
+                  {[...Array(40)].map((_, i) => (
+                    <div
+                      key={`bottom-${i}`}
+                      className="absolute w-3 h-3 bg-yellow-400 rounded-full animate-float opacity-80 shadow-[0_0_10px_rgba(250,204,21,0.8)]"
+                      style={{
+                        left: `${(i * 2.5) % 100}%`,
+                        bottom: `${(i % 4) * 8}%`,
+                        animationDelay: `${i * 0.1}s`,
+                        animationDuration: '3s'
+                      }}
+                    ></div>
+                  ))}
+                  
+                  {[...Array(40)].map((_, i) => (
+                    <div
+                      key={`middle-${i}`}
+                      className="absolute w-2.5 h-2.5 bg-orange-400 rounded-full animate-float opacity-75 shadow-[0_0_8px_rgba(251,146,60,0.8)]"
+                      style={{
+                        left: `${((i * 2.5) + 1.25) % 100}%`,
+                        bottom: `${((i % 4) * 8) + 35}%`,
+                        animationDelay: `${i * 0.12}s`,
+                        animationDuration: '3.5s'
+                      }}
+                    ></div>
+                  ))}
+                  
+                  {[...Array(40)].map((_, i) => (
+                    <div
+                      key={`top-${i}`}
+                      className="absolute w-2 h-2 bg-red-400 rounded-full animate-float opacity-70 shadow-[0_0_6px_rgba(248,113,113,0.8)]"
+                      style={{
+                        left: `${((i * 2.5) + 0.5) % 100}%`,
+                        bottom: `${((i % 4) * 8) + 70}%`,
+                        animationDelay: `${i * 0.15}s`,
+                        animationDuration: '4s'
+                      }}
+                    ></div>
+                  ))}
+                </>
+              )}
             </div>
 
-            {/* Rotating Ring Effect */}
-            <div className="absolute inset-0 z-30 pointer-events-none">
-              <div className="absolute inset-4 border-4 border-yellow-300/50 rounded-full animate-spin" style={{ animationDuration: '8s' }}></div>
-              <div className="absolute inset-8 border-4 border-orange-300/50 rounded-full animate-spin" style={{ animationDuration: '6s', animationDirection: 'reverse' }}></div>
-            </div>
+            {/* Rotating Rings and Large Flag - Only for non-bearers */}
+            {!isCurrentPlayerBearer && (
+              <>
+                {/* Scattered sparkles */}
+                <div className="absolute inset-0 z-30 pointer-events-none overflow-hidden">
+                  {[...Array(30)].map((_, i) => (
+                    <div
+                      key={`sparkle-${i}`}
+                      className="absolute w-1.5 h-1.5 bg-white rounded-full animate-float opacity-90 shadow-[0_0_12px_rgba(255,255,255,1)]"
+                      style={{
+                        left: `${Math.random() * 100}%`,
+                        bottom: `${Math.random() * 100}%`,
+                        animationDelay: `${i * 0.08}s`,
+                        animationDuration: `${2.5 + Math.random()}s`
+                      }}
+                    ></div>
+                  ))}
+                  
+                  {/* Large glowing orbs */}
+                  {[...Array(15)].map((_, i) => (
+                    <div
+                      key={`orb-${i}`}
+                      className="absolute w-6 h-6 bg-gradient-to-br from-yellow-300 to-orange-400 rounded-full animate-float opacity-60 blur-sm shadow-[0_0_20px_rgba(250,204,21,1)]"
+                      style={{
+                        left: `${(i * 7) % 100}%`,
+                        bottom: `${(i * 11) % 100}%`,
+                        animationDelay: `${i * 0.2}s`,
+                        animationDuration: '5s'
+                      }}
+                    ></div>
+                  ))}
+                </div>
 
-            {/* GIANT Flag Overlay - Semi-transparent waving flag */}
+                {/* Rotating Ring Effect */}
+                <div className="absolute inset-0 z-30 pointer-events-none">
+                  <div className="absolute inset-4 border-4 border-yellow-300/50 rounded-full animate-spin" style={{ animationDuration: '8s' }}></div>
+                  <div className="absolute inset-8 border-4 border-orange-300/50 rounded-full animate-spin" style={{ animationDuration: '6s', animationDirection: 'reverse' }}></div>
+                </div>
+              </>
+            )}
+
+            {/* Giant Flag Overlay - Smaller for bearer, huge for others */}
             <div className="absolute inset-0 z-35 pointer-events-none flex items-center justify-center">
               <div 
-                className="text-[20rem] animate-pulse opacity-60 drop-shadow-[0_0_40px_rgba(250,204,21,1)]"
+                className={`animate-pulse drop-shadow-[0_0_40px_rgba(250,204,21,1)] ${
+                  isCurrentPlayerBearer 
+                    ? 'text-[4rem] opacity-25' 
+                    : 'text-[20rem] opacity-60'
+                }`}
                 style={{
                   animation: 'pulse 2s ease-in-out infinite, float 4s ease-in-out infinite',
-                  filter: 'drop-shadow(0 0 40px rgba(250,204,21,1)) drop-shadow(0 0 80px rgba(251,191,36,0.8))'
+                  filter: isCurrentPlayerBearer
+                    ? 'drop-shadow(0 0 10px rgba(250,204,21,0.3))'
+                    : 'drop-shadow(0 0 40px rgba(250,204,21,1)) drop-shadow(0 0 80px rgba(251,191,36,0.8))'
                 }}
               >
                 🚩
               </div>
             </div>
 
-            {/* Flag Bearer Badge */}
-            <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-yellow-500 to-orange-500 text-white px-4 py-2 rounded-full text-lg font-bold shadow-2xl z-40 border-2 border-yellow-300 animate-bounce">
-              🚩 FLAG BEARER
-            </div>
+            {/* Flag Bearer Badge - Only show for non-bearers */}
+            {!isCurrentPlayerBearer && (
+              <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-yellow-500 to-orange-500 text-white px-4 py-2 rounded-full text-lg font-bold shadow-2xl z-40 border-2 border-yellow-300 animate-bounce">
+                🚩 FLAG BEARER
+              </div>
+            )}
 
             {/* Bearer Info */}
             <div className="absolute bottom-4 left-4 bg-black/70 text-white px-3 py-2 rounded-lg text-sm z-40 border border-yellow-400">
@@ -457,13 +574,20 @@ export default function TileRenderer({ tile, harvestResult, factoryData, attackR
               {flagBearer.currentHP && flagBearer.maxHP && (
                 <div className="text-xs">HP: {flagBearer.currentHP}/{flagBearer.maxHP}</div>
               )}
-              {onFlagAttack && (
+              {/* Only show attack button if player is NOT the bearer */}
+              {onFlagAttack && !isCurrentPlayerBearer && (
                 <button
                   onClick={() => onFlagAttack(flagBearer)}
                   className="mt-2 w-full bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-700 hover:to-orange-700 text-white px-3 py-1 rounded-md text-xs font-semibold transition-all hover:scale-105 active:scale-95 border border-red-400 shadow-lg"
                 >
                   ⚔️ Attack Bearer
                 </button>
+              )}
+              {/* Show status message if player IS the bearer */}
+              {isCurrentPlayerBearer && (
+                <div className="mt-2 w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white px-3 py-2 rounded-md text-xs font-semibold text-center border border-green-400 shadow-lg">
+                  ✓ You hold the flag!
+                </div>
               )}
             </div>
           </>
@@ -519,41 +643,127 @@ export default function TileRenderer({ tile, harvestResult, factoryData, attackR
           </>
         )}
 
-        {/* Flag Bearer Trail Particles (8-minute lingering effect) */}
+        {/* Flag Bearer Trail Particles (8-minute lingering effect) - EXTREME VISIBILITY */}
+        {/* CRITICAL: This is the PRIMARY tracking method for flag bearer (Tier 0 - FREE) */}
         {isInTrail && flagBearer && (
           <>
-            {/* Trail Glow Effect - Fades over 8 minutes */}
+            {/* LAYER 1: MASSIVE Animated Border Pulse - COVERING ENTIRE TILE */}
             <div 
               className="absolute inset-0 z-25 pointer-events-none"
-              style={{ opacity: trailOpacity * 0.6 }}
+              style={{ opacity: trailOpacity }}
             >
-              <div className="absolute inset-0 bg-gradient-radial from-yellow-400/30 via-orange-400/20 to-transparent"></div>
+              <div 
+                className="absolute inset-0 border-[10px] border-yellow-300 animate-pulse"
+                style={{
+                  backgroundColor: `rgba(250, 204, 21, ${trailOpacity * 0.3})`,
+                  boxShadow: `
+                    inset 0 0 60px rgba(250, 204, 21, ${trailOpacity}),
+                    inset 0 0 100px rgba(251, 146, 60, ${trailOpacity * 0.8}),
+                    0 0 80px rgba(250, 204, 21, ${trailOpacity}),
+                    0 0 120px rgba(251, 146, 60, ${trailOpacity}),
+                    0 0 160px rgba(252, 211, 77, ${trailOpacity * 0.7})
+                  `
+                }}
+              ></div>
+            </div>
+
+            {/* LAYER 2: INTENSE Background Glow - COVERS ENTIRE TILE */}
+            <div 
+              className="absolute inset-0 z-24 pointer-events-none"
+              style={{ opacity: trailOpacity }}
+            >
+              <div className="absolute inset-0 bg-gradient-radial from-yellow-200 via-orange-300/90 to-yellow-300/70 animate-pulse"></div>
+              <div className="absolute inset-0 bg-gradient-to-br from-yellow-300/80 via-orange-300/80 to-red-400/60"></div>
+              <div className="absolute inset-0 bg-yellow-200/40"></div>
             </div>
             
-            {/* Trail Particles - Golden sparkles */}
-            <div className="absolute inset-0 z-25 pointer-events-none overflow-hidden">
-              {[...Array(Math.ceil(15 * trailOpacity))].map((_, i) => (
+            {/* LAYER 3: GIGANTIC Animated Particles - FILL THE TILE */}
+            <div className="absolute inset-0 z-26 pointer-events-none overflow-hidden">
+              {[...Array(Math.ceil(120 * trailOpacity))].map((_, i) => (
                 <div
                   key={`trail-${i}`}
-                  className="absolute w-2 h-2 bg-yellow-400 rounded-full animate-float"
+                  className="absolute bg-yellow-200 rounded-full animate-float"
                   style={{
-                    left: `${(i * 7 + 10) % 90}%`,
-                    bottom: `${(i * 11) % 80}%`,
-                    animationDelay: `${i * 0.15}s`,
-                    animationDuration: '4s',
-                    opacity: trailOpacity * 0.8,
-                    boxShadow: `0 0 ${8 * trailOpacity}px rgba(250, 204, 21, ${trailOpacity})`
+                    width: `${10 + (i % 5) * 3}px`,
+                    height: `${10 + (i % 5) * 3}px`,
+                    left: `${(i * 3 + 2) % 98}%`,
+                    bottom: `${(i * 5) % 95}%`,
+                    animationDelay: `${i * 0.03}s`,
+                    animationDuration: `${1.5 + (i % 4) * 0.3}s`,
+                    opacity: trailOpacity,
+                    backgroundColor: i % 3 === 0 ? 'rgb(250, 204, 21)' : i % 3 === 1 ? 'rgb(251, 146, 60)' : 'rgb(252, 211, 77)',
+                    boxShadow: `
+                      0 0 ${30 * trailOpacity}px rgba(250, 204, 21, ${trailOpacity}),
+                      0 0 ${50 * trailOpacity}px rgba(251, 146, 60, ${trailOpacity}),
+                      0 0 ${70 * trailOpacity}px rgba(252, 211, 77, ${trailOpacity * 0.8})
+                    `
                   }}
                 ></div>
               ))}
             </div>
+
+            {/* LAYER 4: Massive Swirling Expansion Rings */}
+            <div className="absolute inset-0 z-25 pointer-events-none overflow-hidden">
+              {[...Array(16)].map((_, i) => (
+                <div
+                  key={`swirl-${i}`}
+                  className="absolute w-16 h-16 rounded-full border-[4px] border-yellow-300"
+                  style={{
+                    left: '50%',
+                    top: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    animation: `expand-fade ${1.2 + i * 0.15}s ease-out infinite`,
+                    animationDelay: `${i * 0.1}s`,
+                    opacity: trailOpacity,
+                    boxShadow: `0 0 30px rgba(250, 204, 21, ${trailOpacity})`
+                  }}
+                ></div>
+              ))}
+            </div>
+
+            {/* LAYER 5: GIGANTIC Corner Sparkles */}
+            <div className="absolute top-0 left-0 w-12 h-12 bg-yellow-200 rounded-full z-27 animate-ping shadow-[0_0_40px_rgba(250,204,21,1)]" style={{ opacity: trailOpacity }}></div>
+            <div className="absolute top-0 right-0 w-12 h-12 bg-yellow-200 rounded-full z-27 animate-ping shadow-[0_0_40px_rgba(250,204,21,1)]" style={{ opacity: trailOpacity, animationDelay: '0.2s' }}></div>
+            <div className="absolute bottom-0 left-0 w-12 h-12 bg-yellow-200 rounded-full z-27 animate-ping shadow-[0_0_40px_rgba(250,204,21,1)]" style={{ opacity: trailOpacity, animationDelay: '0.4s' }}></div>
+            <div className="absolute bottom-0 right-0 w-12 h-12 bg-yellow-200 rounded-full z-27 animate-ping shadow-[0_0_40px_rgba(250,204,21,1)]" style={{ opacity: trailOpacity, animationDelay: '0.6s' }}></div>
             
-            {/* Trail Age Badge */}
+            {/* LAYER 6: GIGANTIC Trail Age Badge */}
             <div 
-              className="absolute bottom-2 right-2 bg-yellow-600/70 backdrop-blur-sm text-white px-2 py-1 rounded-md text-xs font-semibold z-30 border border-yellow-300/50"
+              className="absolute bottom-1 right-1 bg-gradient-to-br from-yellow-300 to-orange-500 backdrop-blur-sm text-black px-6 py-3 rounded-2xl text-xl font-black z-30 border-[4px] border-yellow-100 shadow-2xl"
+              style={{ 
+                opacity: trailOpacity,
+                boxShadow: `
+                  0 0 40px rgba(250, 204, 21, ${trailOpacity}),
+                  0 0 60px rgba(251, 146, 60, ${trailOpacity}),
+                  inset 0 0 30px rgba(255, 255, 255, 0.5)
+                `
+              }}
+            >
+              <div className="flex items-center gap-3">
+                <span className="text-4xl animate-pulse">🚩</span>
+                <span className="drop-shadow-[0_2px_6px_rgba(0,0,0,1)]">{Math.ceil((1 - trailAge) * 8)}min</span>
+              </div>
+            </div>
+
+            {/* LAYER 7: GIGANTIC "FLAG TRAIL" Text Overlay */}
+            <div 
+              className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-28 pointer-events-none"
               style={{ opacity: trailOpacity }}
             >
-              🚩 Trail: {Math.ceil((1 - trailAge) * 8)}min ago
+              <div 
+                className="text-yellow-100 font-black text-3xl tracking-widest animate-pulse"
+                style={{
+                  textShadow: `
+                    0 0 20px rgba(250, 204, 21, ${trailOpacity}),
+                    0 0 40px rgba(251, 146, 60, ${trailOpacity}),
+                    0 0 60px rgba(252, 211, 77, ${trailOpacity}),
+                    4px 4px 8px rgba(0, 0, 0, 1),
+                    -2px -2px 4px rgba(255, 255, 255, 0.5)
+                  `
+                }}
+              >
+                FLAG TRAIL
+              </div>
             </div>
           </>
         )}
@@ -677,9 +887,9 @@ export default function TileRenderer({ tile, harvestResult, factoryData, attackR
         {/* Tile Interaction Buttons */}
         <div className="mt-3 flex flex-wrap gap-2">
           {/* Bank Button */}
-          {tile.terrain === TerrainType.Bank && (
+          {tile.terrain === TerrainType.Bank && onBankClick && (
             <button
-              onClick={() => router.push('/game/bank')}
+              onClick={onBankClick}
               className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-semibold px-4 py-2 rounded transition-colors"
             >
               🏦 Open Bank
@@ -687,9 +897,9 @@ export default function TileRenderer({ tile, harvestResult, factoryData, attackR
           )}
 
           {/* Shrine Button */}
-          {tile.terrain === TerrainType.Shrine && (
+          {tile.terrain === TerrainType.Shrine && onShrineClick && (
             <button
-              onClick={() => router.push('/game/shrine')}
+              onClick={onShrineClick}
               className="flex-1 bg-purple-600 hover:bg-purple-500 text-white font-semibold px-4 py-2 rounded transition-colors"
             >
               ⛩️ Visit Shrine

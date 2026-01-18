@@ -13,6 +13,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useGameContext } from '@/context/GameContext';
 import { GameLayout, StatsPanel, TileRenderer, ControlsPanel, BankPanel, ShrinePanel, UnitBuildPanelEnhanced, FactoryManagementPanel, TierUnlockPanel, BattleLogLinks, SpecializationPanel, DiscoveryNotification, DiscoveryLogPanel, AchievementNotification, AchievementPanel, AuctionHousePanel, InventoryPanel, BotScannerPanel, BeerBasePanel, AutoFarmPanel, AutoFarmStatsDisplay, BotMagnetPanel, BotSummoningPanel, BountyBoardPanel } from '@/components';
+import { TutorialOverlay, TutorialQuestPanel } from '@/components/tutorial';
 import TopNavBar from '@/components/TopNavBar';
 import FlagTrackerPanel from '@/components/FlagTrackerPanel';
 import TileHarvestStatus from '@/components/TileHarvestStatus';
@@ -24,11 +25,14 @@ import StatsViewWrapper from '@/components/StatsViewWrapper';
 import TechTreePage from '@/app/tech-tree/page';
 import ProfilePage from '@/app/profile/page';
 import AdminPage from '@/app/admin/page';
+import ReferralsPage from '@/app/referrals/page';
 import WMDMiniStatus from '@/components/WMDMiniStatus';
+import WMDHub from '@/components/WMDHub';
 import { TerrainType, Discovery, Achievement, type FlagBearer } from '@/types';
 import { AutoFarmEngine } from '@/utils/autoFarmEngine';
 import { AutoFarmStatus, AutoFarmSessionStats, AutoFarmAllTimeStats, AutoFarmEvent, DEFAULT_SESSION_STATS, DEFAULT_ALL_TIME_STATS } from '@/types/autoFarm.types';
 import { loadAllTimeStats } from '@/lib/autoFarmPersistence';
+import { isTypingInInput } from '@/hooks/useKeyboardShortcut';
 
 /**
  * Get background image path for current tile terrain
@@ -76,7 +80,7 @@ function getTerrainBackgroundImage(terrain: TerrainType, x: number, y: number): 
 }
 
 export default function GamePage() {
-  const { player, currentTile, isLoading, refreshGameState, updateTileOnly } = useGameContext();
+  const { player, currentTile, isLoading, refreshGameState, updateTileOnly, setPlayer } = useGameContext();
   const router = useRouter();
   const [harvestResult, setHarvestResult] = useState<any>(null);
   const [isHarvesting, setIsHarvesting] = useState(false);
@@ -84,8 +88,7 @@ export default function GamePage() {
   const [attackResult, setAttackResult] = useState<any>(null);
   const [factoryData, setFactoryData] = useState<any>(null);
   const [lastTileKey, setLastTileKey] = useState<string>('');
-  const [showBankPanel, setShowBankPanel] = useState(false);
-  const [showShrinePanel, setShowShrinePanel] = useState(false);
+  // Bank and Shrine now use currentView instead of modal states
   const [showUnitBuildPanel, setShowUnitBuildPanel] = useState(false);
   const [showFactoryManagement, setShowFactoryManagement] = useState(false);
   const [showTierUnlockPanel, setShowTierUnlockPanel] = useState(false);
@@ -99,13 +102,19 @@ export default function GamePage() {
   // ============================================
   // CENTER VIEW STATE (Embedded Page Navigation)
   // ============================================
-  type CenterView = 'TILE' | 'LEADERBOARD' | 'STATS' | 'TECH_TREE' | 'CLAN' | 'CLANS' | 'BATTLE_LOG' | 'INVENTORY' | 'PROFILE' | 'ADMIN';
+  type CenterView = 'TILE' | 'LEADERBOARD' | 'STATS' | 'TECH_TREE' | 'CLAN' | 'CLANS' | 'BATTLE_LOG' | 'INVENTORY' | 'PROFILE' | 'ADMIN' | 'WMD' | 'REFERRALS' | 'SHRINE' | 'BANK';
   const [currentView, setCurrentView] = useState<CenterView>('TILE');
   
   const [panelMessage, setPanelMessage] = useState<string>('');
   const [discoveryNotification, setDiscoveryNotification] = useState<Discovery | null>(null);
   const [achievementNotification, setAchievementNotification] = useState<Achievement | null>(null);
   const [totalDiscoveries, setTotalDiscoveries] = useState<number | undefined>(undefined);
+
+  // ============================================
+  // CHAT & DM STATE
+  // ============================================
+  const [chatTab, setChatTab] = useState<'CHAT' | 'DM'>('CHAT');
+  const [dmUnreadCount, setDmUnreadCount] = useState<number>(0);
 
   // ============================================
   // AUTO-FARM STATE & ENGINE
@@ -125,10 +134,16 @@ export default function GamePage() {
   const [attackCooldown, setAttackCooldown] = useState<boolean>(false);
   const [cooldownRemaining, setCooldownRemaining] = useState<number>(0);
 
-  // Redirect to register if no player (but wait for loading to finish)
+  // Redirect to login if no player (but ONLY after loading finishes)
+  // This prevents race conditions where we redirect before GameContext loads player
   useEffect(() => {
+    // Only redirect if:
+    // 1. Loading is complete (!isLoading)
+    // 2. No player data found (!player)
+    // 3. We're not already navigating
     if (!isLoading && !player) {
-      router.push('/register');
+      console.log('[GamePage] No authenticated session, redirecting to login');
+      router.push('/login');
     }
   }, [player, isLoading, router]);
 
@@ -146,17 +161,28 @@ export default function GamePage() {
           attackPlayers: false,
           rankFilter: 'ALL',
           resourceTarget: 'METAL',
-          isVIP: player.isVIP || false
+          isVIP: player.vip || false
         };
         // Always update VIP status from player data (in case it changed)
-        config.isVIP = player.isVIP || false;
+        config.isVIP = player.vip || false;
+        console.log('[AutoFarm Init] VIP Status Check:', { 
+          playerVIP: player.vip, 
+          playerHasVIPField: 'vip' in player,
+          configIsVIP: config.isVIP,
+          shrineBoosts: player.shrineBoosts?.length || 0
+        });
       } catch (error) {
         config = {
           attackPlayers: false,
           rankFilter: 'ALL',
           resourceTarget: 'METAL',
-          isVIP: player.isVIP || false
+          isVIP: player.vip || false
         };
+        console.log('[AutoFarm Init] VIP Status Check (error path):', { 
+          playerVIP: player.vip, 
+          configIsVIP: config.isVIP,
+          shrineBoosts: player.shrineBoosts?.length || 0
+        });
       }
 
       const engine = new AutoFarmEngine(config, player.currentPosition);
@@ -219,6 +245,25 @@ export default function GamePage() {
         setAutoFarmTilesCompleted(state.tilesCompleted);
       });
 
+      // Register refresh callback to update UI after harvests
+      engine.onRefresh(async () => {
+        // Lightweight resource update - just fetch player data without full refresh
+        if (!player) return;
+        
+        try {
+          const response = await fetch(`/api/player?username=${encodeURIComponent(player.username)}`);
+          const data = await response.json();
+          
+          if (data.success && data.data) {
+            // Update only the player state with fresh data (includes updated resources)
+            setPlayer(data.data);
+            console.log('[AutoFarm] Resources updated in UI');
+          }
+        } catch (error) {
+          console.warn('[AutoFarm] Failed to refresh resources:', error);
+        }
+      });
+
       autoFarmEngineRef.current = engine;
     }
 
@@ -242,16 +287,9 @@ export default function GamePage() {
   // FLAG TRACKER DATA FETCHING
   // ============================================
   useEffect(() => {
-    // Initialize flag system first (ensures there's always a flag bearer)
-    const initializeFlag = async () => {
-      try {
-        await fetch('/api/flag/init', { method: 'POST' });
-      } catch (error) {
-        console.error('[Flag Tracker] Error initializing flag system:', error);
-      }
-    };
-
     // Fetch initial flag data
+    // NOTE: Flag system is initialized at server startup in server.ts
+    // No need to call /api/flag/init here - it's already done once globally
     const fetchFlagData = async () => {
       try {
         const response = await fetch('/api/flag');
@@ -263,13 +301,16 @@ export default function GamePage() {
           setFlagBearer(null);
         }
       } catch (error) {
-        console.error('[Flag Tracker] Error fetching flag data:', error);
+        // Only log in development - flag might not be initialized yet
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('[Flag Tracker] Error fetching flag data:', error instanceof Error ? error.message : String(error));
+        }
         setFlagBearer(null);
       }
     };
 
-    // Initialize then fetch
-    initializeFlag().then(() => fetchFlagData());
+    // Fetch immediately
+    fetchFlagData();
 
     // Poll for updates every 30 seconds (until WebSocket is implemented)
     const pollInterval = setInterval(fetchFlagData, 30000);
@@ -283,8 +324,9 @@ export default function GamePage() {
     
     const tileKey = `${currentTile.x},${currentTile.y}`;
     if (lastTileKey && lastTileKey !== tileKey) {
-      // DO NOT clear harvestResult here - let it persist so player can see results while moving
-      // Only clear attack/factory results which are position-specific
+      // Clear harvest result when moving to a new tile
+      setHarvestResult(null);
+      // Clear attack/factory results which are position-specific
       setAttackResult(null);
       setFactoryData(null);
       
@@ -319,25 +361,7 @@ export default function GamePage() {
   // Handle keyboard shortcuts for Bank and Shrine
   const handleKeyPress = useCallback((event: KeyboardEvent) => {
     // Ignore if typing in input field or editable content
-    const target = event.target as HTMLElement;
-    const activeElement = document.activeElement;
-    
-    // Check if user is typing in any input element
-    // Check both event target AND active element (for styled inputs)
-    if (
-      event.target instanceof HTMLInputElement || 
-      event.target instanceof HTMLTextAreaElement ||
-      activeElement instanceof HTMLInputElement ||
-      activeElement instanceof HTMLTextAreaElement ||
-      target.isContentEditable ||
-      target.tagName === 'INPUT' ||
-      target.tagName === 'TEXTAREA' ||
-      activeElement?.tagName === 'INPUT' ||
-      activeElement?.tagName === 'TEXTAREA' ||
-      target.closest('input') !== null ||
-      target.closest('textarea') !== null ||
-      target.closest('[contenteditable="true"]') !== null
-    ) {
+    if (isTypingInInput()) {
       return;
     }
 
@@ -350,7 +374,7 @@ export default function GamePage() {
         setTimeout(() => setPanelMessage(''), 3000);
         return;
       }
-      setShowBankPanel(true);
+      setCurrentView('BANK');
     }
 
     // 'N' key - Open Shrine Panel (N for shriNe, avoiding S = South movement conflict)
@@ -360,7 +384,7 @@ export default function GamePage() {
         setTimeout(() => setPanelMessage(''), 3000);
         return;
       }
-      setShowShrinePanel(true);
+      setCurrentView('SHRINE');
     }
 
     // 'U' key - Open Unit Build Panel (can build anywhere)
@@ -403,8 +427,8 @@ export default function GamePage() {
       setShowBountyBoard(prev => !prev);
     }
 
-    // 'R' key - Toggle Auto-Farm (R for Robot/automate)
-    if (key === 'r') {
+    // 'Shift+F' key - Toggle Auto-Farm (Shift+F since F is for harvest)
+    if (key === 'f' && event.shiftKey) {
       if (!autoFarmEngineRef.current) return;
       
       if (autoFarmStatus === AutoFarmStatus.STOPPED) {
@@ -414,13 +438,7 @@ export default function GamePage() {
       } else if (autoFarmStatus === AutoFarmStatus.PAUSED) {
         handleAutoFarmResume();
       }
-    }
-
-    // 'Shift+R' key - Stop Auto-Farm
-    if (key === 'r' && event.shiftKey) {
-      if (autoFarmStatus !== AutoFarmStatus.STOPPED) {
-        handleAutoFarmStop();
-      }
+      return; // Prevent F key from triggering harvest
     }
 
     // 'C' key - Toggle Clan Panel
@@ -490,13 +508,14 @@ export default function GamePage() {
         item: data.item,
       });
 
-      // Do NOT refresh game state - keep the page as is
-      // The result is displayed inline, player can continue moving
+      // Update tile data immediately to show cooldown indicator
+      if (data.success && currentTile) {
+        setTimeout(() => {
+          updateTileOnly(currentTile.x, currentTile.y);
+        }, 100);
+      }
 
-      // Clear result after 3 seconds
-      setTimeout(() => {
-        setHarvestResult(null);
-      }, 3000);
+      // Don't auto-clear results - they persist until player moves away
     } catch (error) {
       console.error('Harvest error:', error);
       setHarvestResult({
@@ -615,10 +634,11 @@ export default function GamePage() {
   const handleFlagAttack = async (bearer: FlagBearer) => {
     if (!player || attackCooldown) return;
 
-    // Get the bearer ID (player or bot)
-    const targetId = bearer.playerId || 'BOT'; // Use 'BOT' placeholder if bot holds flag
-
     try {
+      // Get the bearer ID (player or bot)
+      // If playerId is empty/falsy, use 'BOT' placeholder for better clarity
+      const targetId = bearer.playerId && bearer.playerId.length > 0 ? bearer.playerId : 'BOT';
+
       const response = await fetch('/api/flag/attack', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -628,10 +648,15 @@ export default function GamePage() {
         })
       });
 
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+
       const result = await response.json();
 
       if (result.success && result.data?.success) {
-        setPanelMessage(`⚔️ Attack successful! Damage: ${result.data.damage}`);
+        setPanelMessage(`⚔️ ${result.data.message || `Attack successful! Damage: ${result.data.damage}`}`);
         
         // Start cooldown (60 seconds)
         setAttackCooldown(true);
@@ -654,14 +679,21 @@ export default function GamePage() {
         if (flagData.success && flagData.data) {
           setFlagBearer(flagData.data);
         }
+
+        // If bearer was defeated, refresh game state to update flag ownership
+        if (result.data.bearerDefeated) {
+          await refreshGameState();
+        }
       } else {
-        setPanelMessage(`❌ Attack failed: ${result.data?.error || result.error || 'Unknown error'}`);
+        const errorMsg = result.data?.error || result.error || 'Unknown error';
+        setPanelMessage(`❌ Attack failed: ${errorMsg}`);
       }
 
       setTimeout(() => setPanelMessage(''), 5000);
     } catch (error) {
       console.error('[Flag Tracker] Attack error:', error);
-      setPanelMessage('❌ Attack failed: Network error');
+      const errorMsg = error instanceof Error ? error.message : 'Network error';
+      setPanelMessage(`❌ Attack failed: ${errorMsg}`);
       setTimeout(() => setPanelMessage(''), 5000);
     }
   };
@@ -683,6 +715,21 @@ export default function GamePage() {
 
   return (
     <>
+      {/* Tutorial System - Interactive quest overlay for new players */}
+      {player && (
+        <TutorialOverlay 
+          playerId={String((player as any)._id || player.username)}
+          isEnabled={true}
+          onComplete={() => {
+            console.log('Tutorial completed!');
+            refreshGameState();
+          }}
+          onSkip={() => {
+            console.log('Tutorial skipped');
+          }}
+        />
+      )}
+
       <TopNavBar 
         onLeaderboardClick={() => setCurrentView('LEADERBOARD')}
         onClansClick={() => setCurrentView('CLANS')}
@@ -691,6 +738,9 @@ export default function GamePage() {
         onTechTreeClick={() => setCurrentView('TECH_TREE')}
         onProfileClick={() => setCurrentView('PROFILE')}
         onAdminClick={() => setCurrentView('ADMIN')}
+        onWMDClick={() => setCurrentView('WMD')}
+        onDMClick={() => setChatTab('DM')}
+        dmUnreadCount={dmUnreadCount}
       />
       
       <InventoryPanel />
@@ -745,28 +795,7 @@ export default function GamePage() {
       {/* Beer Base Panel - Always rendered, self-manages hotkey activation */}
       <BeerBasePanel />
       
-      {/* Bank Panel */}
-      {currentTile && currentTile.terrain === TerrainType.Bank && player && (
-        <BankPanel
-          isOpen={showBankPanel}
-          onClose={() => setShowBankPanel(false)}
-          playerResources={player.resources}
-          bankStorage={player.bank || { metal: 0, energy: 0 }}
-          bankType={currentTile.bankType || 'metal'}
-          onTransaction={handleTransaction}
-        />
-      )}
-
-      {/* Shrine Panel */}
-      {currentTile && currentTile.terrain === TerrainType.Shrine && player && (
-        <ShrinePanel
-          isOpen={showShrinePanel}
-          onClose={() => setShowShrinePanel(false)}
-          tradeableItems={player.inventory?.items.filter(item => item.type === 'TRADEABLE_ITEM').reduce((sum, item) => sum + (item.quantity || 1), 0) || 0}
-          activeBoosts={player.shrineBoosts || []}
-          onTransaction={handleTransaction}
-        />
-      )}
+      {/* Bank and Shrine now use center panel views instead of modals */}
 
       {/* Unit Build Panel - Can build anywhere */}
       {player && (
@@ -844,9 +873,20 @@ export default function GamePage() {
       )}
 
       <GameLayout
-        statsPanel={<StatsPanel onClanClick={() => setCurrentView('CLAN')} />}
+        statsPanel={<StatsPanel onClanClick={() => setCurrentView('CLAN')} onReferralsClick={() => setCurrentView('REFERRALS')} onFactoryManagementClick={() => setShowFactoryManagement(true)} flagBearer={flagBearer} />}
         battleLogs={<BattleLogLinks />}
         backgroundImage={currentTile ? getTerrainBackgroundImage(currentTile.terrain, currentTile.x, currentTile.y) : undefined}
+        chatUser={player ? {
+          userId: player.username,
+          username: player.username,
+          level: player.level,
+          isVIP: player.vip || false,
+          clanId: player.clanId,
+          clanName: player.clanName,
+        } : undefined}
+        initialChatTab={chatTab}
+        onChatTabChange={setChatTab}
+        onDMUnreadCountChange={setDmUnreadCount}
         tileView={
           currentView === 'TILE' && currentTile ? (
             <div className="flex items-center justify-center w-full h-full p-4">
@@ -865,6 +905,8 @@ export default function GamePage() {
                 onAttackClick={handleAttack}
                 isAttacking={isAttacking}
                 onFlagAttack={handleFlagAttack}
+                onBankClick={() => setCurrentView('BANK')}
+                onShrineClick={() => setCurrentView('SHRINE')}
               />
             </div>
           ) : currentView === 'TILE' ? (
@@ -1007,11 +1049,69 @@ export default function GamePage() {
                 <AdminPage embedded={true} />
               </div>
             </div>
+          ) : currentView === 'WMD' ? (
+            <div className="h-full w-full flex flex-col p-6">
+              <div className="mb-4">
+                <button
+                  onClick={() => setCurrentView('TILE')}
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+                >
+                  <span className="text-lg">←</span>
+                  <span>Back to Game</span>
+                </button>
+              </div>
+              <div className="flex-1 overflow-auto">
+                <WMDHub />
+              </div>
+            </div>
+          ) : currentView === 'REFERRALS' ? (
+            <div className="h-full w-full flex flex-col p-6">
+              <div className="mb-4">
+                <button
+                  onClick={() => setCurrentView('TILE')}
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+                >
+                  <span className="text-lg">←</span>
+                  <span>Back to Game</span>
+                </button>
+              </div>
+              <div className="flex-1 overflow-auto">
+                <ReferralsPage />
+              </div>
+            </div>
+          ) : currentView === 'SHRINE' ? (
+            <ShrinePanel
+              tradeableItems={player?.inventory?.items?.filter(i => i.type === 'TRADEABLE_ITEM') || []}
+              activeBoosts={player?.shrineBoosts || []}
+              onTransaction={refreshGameState}
+              onBack={() => setCurrentView('TILE')}
+            />
+          ) : currentView === 'BANK' ? (
+            <div className="h-full w-full flex flex-col p-6 bg-gray-900 text-white">
+              <div className="mb-4">
+                <button
+                  onClick={() => setCurrentView('TILE')}
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors"
+                >
+                  <span className="text-lg">←</span>
+                  <span>Back to Game</span>
+                </button>
+              </div>
+              <div className="flex-1 overflow-auto">
+                {/* TODO: Convert BankPanel to inline view - for now show placeholder */}
+                <div className="text-center mt-10">
+                  <h2 className="text-2xl font-bold text-yellow-400 mb-4">🏦 Bank</h2>
+                  <p className="text-gray-400">Bank panel conversion in progress...</p>
+                  <p className="text-sm text-gray-500 mt-2">Coming soon!</p>
+                </div>
+              </div>
+            </div>
           ) : null
         }
         controlsPanel={
           <>
-            <ControlsPanel />
+            {/* Controls Panel - Contains Position display, Flag Bearer status, and Movement Controls */}
+            <ControlsPanel flagBearer={flagBearer} />
             
             {/* Auto-Farm Control Panel */}
             <div className="p-3">
@@ -1020,7 +1120,7 @@ export default function GamePage() {
                 currentPosition={autoFarmPosition}
                 tilesCompleted={autoFarmTilesCompleted}
                 lastAction={autoFarmLastAction}
-                isVIP={player?.isVIP || false}
+                isVIP={player?.vip || false}
                 onStart={handleAutoFarmStart}
                 onPause={handleAutoFarmPause}
                 onResume={handleAutoFarmResume}
@@ -1030,11 +1130,11 @@ export default function GamePage() {
 
             {/* WMD Mini Status Widget */}
             <div className="p-3">
-              <WMDMiniStatus />
+              <WMDMiniStatus onClick={() => setCurrentView('WMD')} />
             </div>
 
-            {/* Flag Tracker Panel - Always Visible */}
-            {flagBearer && (
+            {/* Flag Tracker Panel - Only show if player is NOT the bearer */}
+            {flagBearer && flagBearer.username !== player?.username && (
               <div className="p-3">
                 <FlagTrackerPanel
                   playerPosition={player?.currentPosition || { x: 75, y: 75 }}
@@ -1048,6 +1148,21 @@ export default function GamePage() {
               </div>
             )}
           </>
+        }
+        tutorialQuestPanel={
+          player && (
+            <TutorialQuestPanel
+              playerId={player.username}
+              isVisible={true}
+              onSkip={() => {
+                console.log('Tutorial skipped from quest panel');
+                refreshGameState();
+              }}
+              onMinimize={() => {
+                console.log('Tutorial minimized');
+              }}
+            />
+          )
         }
       />
     </>

@@ -15,6 +15,18 @@ import { getCollection } from '@/lib/mongodb';
 import { Player, Tile, TerrainType, ShrineBoost, ShrineBoostTier, ItemType } from '@/types';
 import { awardXP, XPAction } from '@/lib/xpService';
 import { trackShrineTrade } from '@/lib/statTrackingService';
+import { 
+  withRequestLogging, 
+  createRouteLogger, 
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  ShrineSacrificeSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
 
 /**
  * Boost tier configurations
@@ -22,7 +34,7 @@ import { trackShrineTrade } from '@/lib/statTrackingService';
  * Differences are in cost and duration only
  */
 const BOOST_TIERS = {
-  speed: {
+  spade: {
     itemCost: 3,
     duration: 1 * 60 * 60 * 1000, // 1 hour in milliseconds
     yieldBonus: 0.25 // +25%
@@ -44,64 +56,46 @@ const BOOST_TIERS = {
   }
 };
 
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.SHRINE_SACRIFICE);
+
 /**
  * POST /api/shrine/sacrifice
  * 
  * Sacrifice items to activate a shrine boost
- * 
- * Request body:
- * ```json
- * {
- *   "tier": "speed" | "heart" | "diamond" | "club"
- * }
- * ```
- * 
- * Success Response:
- * ```json
- * {
- *   "success": true,
- *   "message": "Activated Heart Tier boost! +25% resource yield for 1 hour",
- *   "shrineBoosts": [
- *     { "tier": "heart", "expiresAt": "2025-10-17T15:30:00Z", "yieldBonus": 0.25 }
- *   ],
- *   "totalYieldBonus": 0.25,
- *   "itemsRemaining": 47
- * }
- * ```
  */
-export async function POST(request: Request) {
+export const POST = withRequestLogging(rateLimiter(async (request: Request) => {
+  const log = createRouteLogger('ShrineSacrificeAPI');
+  const endTimer = log.time('shrineSacrifice');
+
   try {
     // Verify authentication
     const authResult = await verifyAuth();
     if (!authResult || !authResult.username) {
-      return NextResponse.json(
-        { success: false, message: 'Authentication required' },
-        { status: 401 }
-      );
+      log.warn('Unauthenticated shrine sacrifice attempt');
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required'
+      });
     }
 
-    const { tier, quantity } = await request.json();
     const username = authResult.username;
 
-    // Validate tier
-    if (!tier || !['speed', 'heart', 'diamond', 'club'].includes(tier)) {
-      return NextResponse.json(
-        { success: false, message: 'Invalid boost tier. Must be "speed", "heart", "diamond", or "club"' },
-        { status: 400 }
-      );
-    }
+    // Parse and validate request body
+    const body = await request.json();
+    const validated = ShrineSacrificeSchema.parse(body);
 
-    const boostConfig = BOOST_TIERS[tier as ShrineBoostTier];
+    log.debug('Shrine sacrifice request', { username, tier: validated.tier });
+
+    const boostConfig = BOOST_TIERS[validated.tier as ShrineBoostTier];
 
     // Get player
     const playersCollection = await getCollection<Player>('players');
     const player = await playersCollection.findOne({ username });
 
     if (!player) {
-      return NextResponse.json(
-        { success: false, message: 'Player not found' },
-        { status: 404 }
-      );
+      log.warn('Player not found', { username });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: 'Player not found'
+      });
     }
 
     // Check if player is at the Shrine
@@ -112,10 +106,13 @@ export async function POST(request: Request) {
     });
 
     if (!currentTile || currentTile.terrain !== TerrainType.Shrine) {
-      return NextResponse.json(
-        { success: false, message: 'You must be at the Shrine of Remembrance (1,1) to activate boosts' },
-        { status: 400 }
-      );
+      log.debug('Player not at shrine', { 
+        username, 
+        position: player.currentPosition 
+      });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: 'You must be at the Shrine of Remembrance (1,1) to activate boosts'
+      });
     }
 
     // Count tradeable items (any cave items except diggers can be sacrificed)
@@ -124,13 +121,14 @@ export async function POST(request: Request) {
     );
 
     if (tradeableItems.length < boostConfig.itemCost) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: `Insufficient items. Need ${boostConfig.itemCost} tradeable items, have ${tradeableItems.length}`
-        },
-        { status: 400 }
-      );
+      log.debug('Insufficient items for sacrifice', { 
+        username, 
+        required: boostConfig.itemCost, 
+        available: tradeableItems.length 
+      });
+      return createErrorResponse(ErrorCode.INSUFFICIENT_RESOURCES, {
+        message: `Insufficient items. Need ${boostConfig.itemCost} tradeable items, have ${tradeableItems.length}`
+      });
     }
 
     // Initialize shrineBoosts if it doesn't exist
@@ -139,15 +137,12 @@ export async function POST(request: Request) {
     }
 
     // Check if this tier boost is already active
-    const existingBoostIndex = player.shrineBoosts.findIndex(b => b.tier === tier);
+    const existingBoostIndex = player.shrineBoosts.findIndex(b => b.tier === validated.tier);
     if (existingBoostIndex !== -1) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: `${tier.charAt(0).toUpperCase() + tier.slice(1)} Tier boost is already active. Use /api/shrine/extend to extend its duration.`
-        },
-        { status: 400 }
-      );
+      log.debug('Boost already active', { username, tier: validated.tier });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: `${validated.tier.charAt(0).toUpperCase() + validated.tier.slice(1)} Tier boost is already active. Use /api/shrine/extend to extend its duration.`
+      });
     }
 
     // Remove the required number of items (consume them)
@@ -159,7 +154,7 @@ export async function POST(request: Request) {
 
     // Create new boost
     const newBoost: ShrineBoost = {
-      tier: tier as ShrineBoostTier,
+      tier: validated.tier as ShrineBoostTier,
       expiresAt: new Date(Date.now() + boostConfig.duration),
       yieldBonus: boostConfig.yieldBonus
     };
@@ -181,7 +176,7 @@ export async function POST(request: Request) {
       }
     );
 
-    const tierName = tier.charAt(0).toUpperCase() + tier.slice(1);
+    const tierName = validated.tier.charAt(0).toUpperCase() + validated.tier.slice(1);
     const durationHours = boostConfig.duration / (60 * 60 * 1000);
 
     // Track shrine trade for achievements
@@ -189,6 +184,14 @@ export async function POST(request: Request) {
 
     // Award XP for shrine sacrifice
     const xpResult = await awardXP(username, XPAction.SHRINE_SACRIFICE);
+
+    log.info('Shrine boost activated', { 
+      username, 
+      tier: validated.tier, 
+      duration: durationHours,
+      itemsConsumed: boostConfig.itemCost,
+      xpAwarded: xpResult.xpAwarded
+    });
 
     return NextResponse.json({
       success: true,
@@ -204,10 +207,14 @@ export async function POST(request: Request) {
     });
 
   } catch (error) {
-    console.error('Shrine sacrifice error:', error);
-    return NextResponse.json(
-      { success: false, message: 'Failed to activate boost' },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      log.warn('Shrine sacrifice validation failed', { issues: error.issues });
+      return createValidationErrorResponse(error);
+    }
+
+    log.error('Shrine sacrifice error', error as Error);
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

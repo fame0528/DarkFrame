@@ -22,6 +22,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authMiddleware';
 import { getBounties, getBountyStats, claimBountyReward } from '@/lib/bountyBoardService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 // ============================================================================
 // GET - Fetch Bounties and Statistics
@@ -32,20 +43,26 @@ import { getBounties, getBountyStats, claimBountyReward } from '@/lib/bountyBoar
  * Returns current bounties and stats for the authenticated player
  * Auto-refreshes bounties if new day
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('bounty-board-get');
+  const endTimer = log.time('bounty-board-get');
+
   try {
     // Authenticate user
     const tokenPayload = await getAuthenticatedUser();
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
 
     // Get bounties (auto-refreshes if needed)
     const bounties = await getBounties(tokenPayload.username);
     const stats = await getBountyStats(tokenPayload.username);
+
+    log.info('Bounty board data retrieved', { 
+      username: tokenPayload.username,
+      activeBounties: bounties.bounties?.length || 0,
+      unclaimedRewards: bounties.unclaimedRewards || 0
+    });
 
     return NextResponse.json({
       success: true,
@@ -57,16 +74,12 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('Bounty board fetch error:', error);
-    return NextResponse.json(
-      {
-        error: 'Failed to load bounty board',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      },
-      { status: 500 }
-    );
+    log.error('Bounty board fetch error', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================================
 // POST - Claim Bounty Reward
@@ -81,15 +94,15 @@ export async function GET(request: NextRequest) {
  *   bountyId: string // Bounty ID to claim
  * }
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('bounty-board-post');
+  const endTimer = log.time('bounty-board-post');
+
   try {
     // Authenticate user
     const tokenPayload = await getAuthenticatedUser();
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
 
     // Parse request body
@@ -98,21 +111,23 @@ export async function POST(request: NextRequest) {
 
     // Validate input
     if (!bountyId || typeof bountyId !== 'string') {
-      return NextResponse.json(
-        { error: 'Valid bounty ID is required' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'Valid bounty ID is required');
     }
 
     // Claim reward
     const result = await claimBountyReward(tokenPayload.username, bountyId);
 
     if (!result.success) {
-      return NextResponse.json(
-        { error: result.message },
-        { status: 400 }
-      );
+      log.warn('Bounty claim failed', { bountyId, reason: result.message });
+      return NextResponse.json({ error: result.message }, { status: 400 });
     }
+
+    log.info('Bounty reward claimed', { 
+      username: tokenPayload.username,
+      bountyId,
+      metalGained: result.metalGained,
+      energyGained: result.energyGained
+    });
 
     // Return success with rewards
     return NextResponse.json({
@@ -122,16 +137,12 @@ export async function POST(request: NextRequest) {
       energyGained: result.energyGained,
     });
   } catch (error) {
-    console.error('Bounty reward claim error:', error);
-    return NextResponse.json(
-      {
-        error: 'Failed to claim bounty reward',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      },
-      { status: 500 }
-    );
+    log.error('Bounty reward claim error', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================================
 // IMPLEMENTATION NOTES

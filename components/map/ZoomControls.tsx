@@ -22,6 +22,7 @@
 
 import React from 'react';
 import { type ZoomLevel, ZOOM_SCALES } from '@/types';
+import { isTypingInInput } from '@/hooks/useKeyboardShortcut';
 
 /**
  * Props for ZoomControls component
@@ -107,8 +108,8 @@ export function ZoomControls({
   // Keyboard shortcuts for zoom
   React.useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
-      // Ignore if user is typing in input field
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      // Ignore if typing in input field
+      if (isTypingInInput()) {
         return;
       }
 

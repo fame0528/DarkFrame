@@ -1,6 +1,7 @@
 /**
  * @file app/api/bank/deposit/route.ts
  * @created 2025-10-17
+ * @modified 2025-10-24 - Phase 2: Production infrastructure - validation, errors, rate limiting
  * @overview Bank deposit API endpoint with 1,000 resource fee
  * 
  * OVERVIEW:
@@ -12,10 +13,23 @@
 import { NextResponse } from 'next/server';
 import { verifyAuth } from '@/lib/authMiddleware';
 import { getCollection } from '@/lib/mongodb';
-import { Player, Tile, TerrainType, BankTransaction, BankStorage, Resources } from '@/types';
+import { Player, Tile, TerrainType, BankTransaction, Resources } from '@/types';
 import { trackResourcesBanked } from '@/lib/statTrackingService';
+import { 
+  withRequestLogging, 
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  BankDepositSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
 
 const DEPOSIT_FEE = 1000;
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.bankDeposit);
 
 /**
  * POST /api/bank/deposit
@@ -40,44 +54,33 @@ const DEPOSIT_FEE = 1000;
  * }
  * ```
  */
-export async function POST(request: Request) {
+export const POST = withRequestLogging(rateLimiter(async (request: Request) => {
+  const log = createRouteLogger('BankDeposit');
+  const endTimer = log.time('depositOperation');
+  
   try {
     // Verify authentication
     const authResult = await verifyAuth();
     if (!authResult || !authResult.username) {
-      return NextResponse.json(
-        { success: false, message: 'Authentication required' },
-        { status: 401 }
-      );
+      log.warn('Unauthenticated deposit attempt');
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED);
     }
 
-    const { resourceType, amount } = await request.json();
+    // Parse and validate request body
+    const body = await request.json();
+    const validated = BankDepositSchema.parse(body);
+    const { resourceType, amount } = validated;
     const username = authResult.username;
-
-    // Validate inputs
-    if (!resourceType || !['metal', 'energy'].includes(resourceType)) {
-      return NextResponse.json(
-        { success: false, message: 'Invalid resource type. Must be "metal" or "energy"' },
-        { status: 400 }
-      );
-    }
-
-    if (typeof amount !== 'number' || amount <= 0 || !Number.isInteger(amount)) {
-      return NextResponse.json(
-        { success: false, message: 'Amount must be a positive integer' },
-        { status: 400 }
-      );
-    }
+    
+    log.debug('Processing deposit', { username, resourceType, amount });
 
     // Get player
     const playersCollection = await getCollection<Player>('players');
     const player = await playersCollection.findOne({ username });
 
     if (!player) {
-      return NextResponse.json(
-        { success: false, message: 'Player not found' },
-        { status: 404 }
-      );
+      log.warn('Player not found', { username });
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED);
     }
 
     // Check if player is at a bank tile
@@ -88,10 +91,8 @@ export async function POST(request: Request) {
     });
 
     if (!currentTile || currentTile.terrain !== TerrainType.Bank) {
-      return NextResponse.json(
-        { success: false, message: 'You must be at a Bank tile to deposit resources' },
-        { status: 400 }
-      );
+      log.warn('Deposit attempt not at bank', { username, position: player.currentPosition });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, { message: 'You must be at a Bank tile to deposit resources' });
     }
 
     // Calculate total amount needed (amount + fee)
@@ -99,12 +100,20 @@ export async function POST(request: Request) {
     const currentAmount = player.resources[resourceType as keyof Resources];
 
     if (currentAmount < totalNeeded) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: `Insufficient ${resourceType}. Need ${totalNeeded.toLocaleString()} (${amount.toLocaleString()} + ${DEPOSIT_FEE.toLocaleString()} fee), have ${currentAmount.toLocaleString()}`
-        },
-        { status: 400 }
+      log.warn('Insufficient resources for deposit', { 
+        username, 
+        resourceType, 
+        needed: totalNeeded, 
+        have: currentAmount 
+      });
+      return createErrorResponse(
+        ErrorCode.INSUFFICIENT_RESOURCES, 
+        { 
+          resourceType, 
+          needed: totalNeeded, 
+          have: currentAmount,
+          fee: DEPOSIT_FEE
+        }
       );
     }
 
@@ -146,6 +155,14 @@ export async function POST(request: Request) {
     // Get updated player data
     const updatedPlayer = await playersCollection.findOne({ username });
 
+    log.info('Deposit successful', { 
+      username, 
+      resourceType, 
+      amount: depositAmount, 
+      fee: feeAmount,
+      newBankTotal: currentBankAmount + depositAmount
+    });
+
     return NextResponse.json({
       success: true,
       message: `Deposited ${depositAmount.toLocaleString()} ${resourceType.charAt(0).toUpperCase() + resourceType.slice(1)} to bank (${feeAmount.toLocaleString()} fee)`,
@@ -154,10 +171,16 @@ export async function POST(request: Request) {
     });
 
   } catch (error) {
-    console.error('Bank deposit error:', error);
-    return NextResponse.json(
-      { success: false, message: 'Failed to deposit resources' },
-      { status: 500 }
-    );
+    log.error('Bank deposit error', error as Error);
+    
+    // Handle validation errors
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    
+    // Handle all other errors
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

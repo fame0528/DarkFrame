@@ -1,70 +1,74 @@
 /**
- * Clan Perk Activate/Deactivate API Route
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/perks/activate/route.ts
+ * @created 2025-10-18
+ * @updated 2025-10-23 (FID-20251023-001: Refactored to use centralized auth + JSDoc)
  * 
  * OVERVIEW:
- * POST endpoint for activating and deactivating clan perks.
- * Validates permissions (Leader, Co-Leader, Officer), clan level requirements,
- * bank balance, and active perk limits before activation.
+ * Clan perk activation/deactivation endpoint. Manages active clan perks with validation.
+ * Validates permissions, level requirements, costs, and active perk limits.
  * 
- * Authentication:
- * - Requires Leader, Co-Leader, or Officer role
- * - Verifies clan membership
+ * ROUTES:
+ * - POST /api/clan/perks/activate - Activate or deactivate clan perk
  * 
- * Integration:
- * - clanPerkService for activation/deactivation logic
- * - clanBankService for cost deduction
- * - Activity logging for perk changes
+ * AUTHENTICATION:
+ * - Requires clan membership via requireClanMembership()
+ * 
+ * BUSINESS RULES:
+ * - Only Leader, Co-Leader, and Officer can manage perks
+ * - Must meet clan level requirements for perk tier
+ * - Must have sufficient bank balance for activation cost
+ * - Limited active perks per tier (Bronze: 2, Silver: 3, Gold: 4)
+ * - All perk changes logged to activity feed
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import clientPromise from '@/lib/mongodb';
+import { getClientAndDatabase, requireClanMembership } from '@/lib';
 import {
   initializeClanPerkService,
   activatePerk,
   deactivatePerk,
 } from '@/lib/clanPerkService';
-import { initializeClanService, getClanByPlayerId } from '@/lib/clanService';
-
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'your-secret-key');
 
 /**
  * POST /api/clan/perks/activate
- * 
  * Activate or deactivate a clan perk
  * 
- * Request Body:
- * {
- *   action: 'activate' | 'deactivate',
- *   perkId: string                        // Perk ID from catalog
- * }
+ * @param request - NextRequest with authentication cookie and perk action in body
+ * @returns NextResponse with perk activation result
  * 
- * Response:
- * - 200: Perk activated/deactivated successfully
- * - 400: Validation error (insufficient funds, level too low, limit reached)
- * - 401: Not authenticated
- * - 403: Insufficient permissions
- * - 404: Perk not found or player not in clan
- * - 500: Server error
+ * @example
+ * POST /api/clan/perks/activate (Activate)
+ * Body: { action: "activate", perkId: "harvest_boost_bronze" }
+ * Response: { success: true, action: "activate", perk: {...}, message: "Perk activated successfully" }
+ * 
+ * @example
+ * POST /api/clan/perks/activate (Deactivate)
+ * Body: { action: "deactivate", perkId: "harvest_boost_bronze" }
+ * Response: { success: true, action: "deactivate", perkId: "...", message: "Perk deactivated" }
+ * 
+ * @throws {400} Missing action or perkId
+ * @throws {400} Invalid action (must be activate/deactivate)
+ * @throws {400} Insufficient bank balance
+ * @throws {400} Clan level too low
+ * @throws {400} Active perk limit reached
+ * @throws {401} Unauthorized
+ * @throws {403} Insufficient permissions (Leader/Officer only)
+ * @throws {404} Perk not found
+ * @throws {500} Failed to activate/deactivate perk
  */
 export async function POST(request: NextRequest) {
   try {
-    // Verify authentication
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
-    }
+    const { client, db } = await getClientAndDatabase();
 
-    const verified = await jwtVerify(token, JWT_SECRET);
-    const username = verified.payload.username as string;
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    const { auth, clanId } = result;
 
-    // Parse request body
+    initializeClanPerkService(client, db);
+
     const body = await request.json();
     const { action, perkId } = body;
 
-    // Validate required fields
     if (!action || !perkId) {
       return NextResponse.json(
         { error: 'Missing required fields: action, perkId' },
@@ -72,7 +76,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate action
     if (action !== 'activate' && action !== 'deactivate') {
       return NextResponse.json(
         { error: 'Invalid action. Must be "activate" or "deactivate"' },
@@ -80,56 +83,29 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Connect to database
-    const client = await clientPromise;
-    const db = client.db('darkframe');
-
-    // Initialize services
-    initializeClanService(client, db);
-    initializeClanPerkService(client, db);
-
-    // Get player
-    const playersCollection = db.collection('players');
-    const player = await playersCollection.findOne({ username });
-    if (!player) {
-      return NextResponse.json({ error: 'Player not found' }, { status: 404 });
-    }
-
-    const playerId = player._id.toString();
-
-    // Get player's clan
-    const clan = await getClanByPlayerId(playerId);
-    if (!clan) {
-      return NextResponse.json({ error: 'Not a member of any clan' }, { status: 400 });
-    }
-
-    const clanId = clan._id!.toString();
-
-    // Execute action
     if (action === 'activate') {
       try {
-        const result = await activatePerk(clanId, playerId, perkId);
+        const activationResult = await activatePerk(clanId, auth.playerId, perkId);
 
         return NextResponse.json(
           {
             success: true,
             action: 'activate',
             perk: {
-              id: result.perk.id,
-              name: result.perk.name,
-              description: result.perk.description,
-              category: result.perk.category,
-              tier: result.perk.tier,
-              bonus: result.perk.bonus,
+              id: activationResult.perk.id,
+              name: activationResult.perk.name,
+              description: activationResult.perk.description,
+              category: activationResult.perk.category,
+              tier: activationResult.perk.tier,
+              bonus: activationResult.perk.bonus,
             },
-            costPaid: result.costPaid,
-            remainingSlots: 4 - result.clan.activePerks.length,
-            message: result.message,
+            costPaid: activationResult.costPaid,
+            remainingSlots: 4 - activationResult.clan.activePerks.length,
+            message: activationResult.message,
           },
           { status: 200 }
         );
       } catch (error: any) {
-        // Handle specific activation errors
         if (error.message.includes('not a member')) {
           return NextResponse.json({ error: error.message }, { status: 404 });
         }
@@ -151,22 +127,20 @@ export async function POST(request: NextRequest) {
         throw error;
       }
     } else {
-      // Deactivate
       try {
-        const result = await deactivatePerk(clanId, playerId, perkId);
+        const deactivationResult = await deactivatePerk(clanId, auth.playerId, perkId);
 
         return NextResponse.json(
           {
             success: true,
             action: 'deactivate',
-            perkName: result.perkName,
-            remainingSlots: 4 - result.clan.activePerks.length,
-            message: result.message,
+            perkName: deactivationResult.perkName,
+            remainingSlots: 4 - deactivationResult.clan.activePerks.length,
+            message: deactivationResult.message,
           },
           { status: 200 }
         );
       } catch (error: any) {
-        // Handle specific deactivation errors
         if (error.message.includes('not a member')) {
           return NextResponse.json({ error: error.message }, { status: 404 });
         }

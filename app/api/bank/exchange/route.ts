@@ -9,13 +9,27 @@
  * Players must be at an Exchange Bank tile.
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createValidationErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+import { ExchangeSchema } from '@/lib/validation/schemas';
+import { ZodError } from 'zod';
 import { verifyAuth } from '@/lib/authMiddleware';
 import { getCollection } from '@/lib/mongodb';
 import { Player, Tile, TerrainType, BankTransaction, Resources } from '@/types';
 
 const EXCHANGE_FEE_RATE = 0.20; // 20% fee
 const EXCHANGE_RATE = 0.80; // Player receives 80% of what they give
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.BANK);
 
 /**
  * POST /api/bank/exchange
@@ -44,44 +58,31 @@ const EXCHANGE_RATE = 0.80; // Player receives 80% of what they give
  * }
  * ```
  */
-export async function POST(request: Request) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('BankExchangeAPI');
+  const endTimer = log.time('bank-exchange');
+  
   try {
     // Verify authentication
     const authResult = await verifyAuth();
     if (!authResult || !authResult.username) {
-      return NextResponse.json(
-        { success: false, message: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
-    const { fromResource, amount } = await request.json();
+    const validated = ExchangeSchema.parse(await request.json());
     const username = authResult.username;
-
-    // Validate inputs
-    if (!fromResource || !['metal', 'energy'].includes(fromResource)) {
-      return NextResponse.json(
-        { success: false, message: 'Invalid resource type. Must be "metal" or "energy"' },
-        { status: 400 }
-      );
-    }
-
-    if (typeof amount !== 'number' || amount <= 0 || !Number.isInteger(amount)) {
-      return NextResponse.json(
-        { success: false, message: 'Amount must be a positive integer' },
-        { status: 400 }
-      );
-    }
 
     // Get player
     const playersCollection = await getCollection<Player>('players');
     const player = await playersCollection.findOne({ username });
 
     if (!player) {
-      return NextResponse.json(
-        { success: false, message: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.RESOURCE_NOT_FOUND, {
+        message: 'Player not found',
+        context: { username },
+      });
     }
 
     // Check if player is at an exchange bank tile
@@ -92,32 +93,33 @@ export async function POST(request: Request) {
     });
 
     if (!currentTile || currentTile.terrain !== TerrainType.Bank || currentTile.bankType !== 'exchange') {
-      return NextResponse.json(
-        { success: false, message: 'You must be at an Exchange Bank tile to exchange resources' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.BANK_INVALID_LOCATION, {
+        message: 'You must be at an Exchange Bank tile to exchange resources',
+        context: { position: player.currentPosition },
+      });
     }
 
     // Calculate exchange
-    const toResource = fromResource === 'metal' ? 'energy' : 'metal';
-    const receivedAmount = Math.floor(amount * EXCHANGE_RATE);
-    const feeAmount = amount - receivedAmount;
+    const toResource = validated.fromResource === 'metal' ? 'energy' : 'metal';
+    const receivedAmount = Math.floor(validated.amount * EXCHANGE_RATE);
+    const feeAmount = validated.amount - receivedAmount;
 
     // Check if player has enough of the source resource
-    const currentAmount = player.resources[fromResource as keyof Resources];
-    if (currentAmount < amount) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: `Insufficient ${fromResource}. Have ${currentAmount.toLocaleString()}, need ${amount.toLocaleString()}`
+    const currentAmount = player.resources[validated.fromResource as keyof Resources];
+    if (currentAmount < validated.amount) {
+      return createErrorResponse(ErrorCode.INSUFFICIENT_RESOURCES, {
+        message: `Insufficient ${validated.fromResource}`,
+        context: { 
+          have: currentAmount, 
+          need: validated.amount,
+          fromResource: validated.fromResource,
         },
-        { status: 400 }
-      );
+      });
     }
 
     // Update player resources
     const resourceUpdate: any = {};
-    resourceUpdate[`resources.${fromResource}`] = currentAmount - amount;
+    resourceUpdate[`resources.${validated.fromResource}`] = currentAmount - validated.amount;
     resourceUpdate[`resources.${toResource}`] = player.resources[toResource as keyof Resources] + receivedAmount;
 
     await playersCollection.updateOne(
@@ -130,33 +132,43 @@ export async function POST(request: Request) {
     await transactionsCollection.insertOne({
       playerId: username,
       type: 'exchange',
-      resourceType: fromResource as 'metal' | 'energy',
+      resourceType: validated.fromResource as 'metal' | 'energy',
       amount: receivedAmount,
       fee: feeAmount,
       timestamp: new Date(),
-      fromResource: { type: fromResource as 'metal' | 'energy', amount },
+      fromResource: { type: validated.fromResource as 'metal' | 'energy', amount: validated.amount },
       toResource: { type: toResource as 'metal' | 'energy', amount: receivedAmount }
     });
 
     // Get updated player data
     const updatedPlayer = await playersCollection.findOne({ username });
 
+    log.info('Resource exchange completed', { 
+      username, 
+      from: validated.fromResource, 
+      to: toResource, 
+      given: validated.amount, 
+      received: receivedAmount 
+    });
+
     return NextResponse.json({
       success: true,
-      message: `Exchanged ${amount.toLocaleString()} ${fromResource.charAt(0).toUpperCase() + fromResource.slice(1)} for ${receivedAmount.toLocaleString()} ${toResource.charAt(0).toUpperCase() + toResource.slice(1)} (20% fee)`,
+      message: `Exchanged ${validated.amount.toLocaleString()} ${validated.fromResource.charAt(0).toUpperCase() + validated.fromResource.slice(1)} for ${receivedAmount.toLocaleString()} ${toResource.charAt(0).toUpperCase() + toResource.slice(1)} (20% fee)`,
       inventory: updatedPlayer!.resources,
       exchangeDetails: {
-        given: { type: fromResource, amount },
+        given: { type: validated.fromResource, amount: validated.amount },
         received: { type: toResource, amount: receivedAmount },
         feeAmount
       }
     });
 
   } catch (error) {
-    console.error('Bank exchange error:', error);
-    return NextResponse.json(
-      { success: false, message: 'Failed to exchange resources' },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Bank exchange error', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

@@ -213,22 +213,22 @@ export async function queryBattleLogs(query: BattleLogQuery): Promise<BattleLog[
  * @returns Promise resolving to player's recent battles
  * 
  * @example
- * const playerBattles = await getPlayerBattleLogs('12345', 20);
+ * const playerBattles = await getPlayerCombatLogs('12345', 20);
  */
-export async function getPlayerBattleLogs(playerId: string, limit: number = 50): Promise<BattleLog[]> {
+export async function getPlayerCombatLogs(playerId: string, limit: number = 50): Promise<BattleLog[]> {
   return queryBattleLogs({ playerId, limit });
 }
 
 /**
- * Get recent battles (last 24 hours)
+ * Get recent battle logs (last 24 hours)
  * 
  * @param limit - Maximum number of battles to return
  * @returns Promise resolving to recent battles
  * 
  * @example
- * const recentBattles = await getRecentBattles(50);
+ * const recentBattles = await getRecentCombatLogs(50);
  */
-export async function getRecentBattles(limit: number = 50): Promise<BattleLog[]> {
+export async function getRecentCombatLogs(limit: number = 50): Promise<BattleLog[]> {
   const oneDayAgo = new Date();
   oneDayAgo.setDate(oneDayAgo.getDate() - 1);
   
@@ -465,9 +465,9 @@ export async function getBattleLogStats(query?: BattleLogQuery): Promise<BattleL
  * @returns Promise resolving to player's combat statistics
  * 
  * @example
- * const playerStats = await getPlayerCombatStats('12345');
+ * const playerStats = await getPlayerCombatStatistics('12345');
  */
-export async function getPlayerCombatStats(playerId: string): Promise<{
+export async function getPlayerCombatStatistics(playerId: string): Promise<{
   totalBattles: number;
   wins: number;
   losses: number;

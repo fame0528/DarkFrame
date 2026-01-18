@@ -12,6 +12,18 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import clientPromise from '@/lib/mongodb';
+import { 
+  withRequestLogging, 
+  createRouteLogger, 
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  ResearchTechSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
 
 // ============================================================
 // TECHNOLOGY DEFINITIONS
@@ -67,6 +79,8 @@ const TECHNOLOGIES: Record<string, Technology> = {
 // POST HANDLER
 // ============================================================
 
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
+
 /**
  * POST /api/research
  * 
@@ -74,6 +88,7 @@ const TECHNOLOGIES: Record<string, Technology> = {
  * 
  * Request Body:
  * - technologyId: string - ID of technology to research
+ * - username: string - Player username
  * 
  * Response:
  * - success: boolean
@@ -82,28 +97,26 @@ const TECHNOLOGIES: Record<string, Technology> = {
  * 
  * Note: Authentication handled by Next.js middleware
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('ResearchAPI');
+  const endTimer = log.time('research');
+
   try {
-    // Authentication is handled by middleware - no need to check here
-
-    // Parse request body
     const body = await request.json();
-    const { technologyId, username } = body;
+    const validated = ResearchTechSchema.parse(body);
 
-    if (!username) {
-      return NextResponse.json(
-        { success: false, error: 'Username is required' },
-        { status: 400 }
-      );
-    }
+    log.debug('Research request', { 
+      username: validated.username, 
+      technologyId: validated.technologyId 
+    });
 
-    // Validate technology
-    const technology = TECHNOLOGIES[technologyId];
+    // Validate technology exists
+    const technology = TECHNOLOGIES[validated.technologyId];
     if (!technology) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid technology ID' },
-        { status: 400 }
-      );
+      log.warn('Invalid technology ID', { technologyId: validated.technologyId });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: 'Invalid technology ID'
+      });
     }
 
     // Connect to database
@@ -113,75 +126,87 @@ export async function POST(request: NextRequest) {
 
     // Fetch player by username
     const player = await playersCollection.findOne({
-      username: username,
+      username: validated.username,
     });
 
     if (!player) {
-      return NextResponse.json(
-        { success: false, error: 'Player not found' },
-        { status: 404 }
-      );
+      log.warn('Player not found', { username: validated.username });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: 'Player not found'
+      });
     }
 
     // Initialize technologies array if it doesn't exist
     const unlockedTechnologies = player.unlockedTechnologies || [];
 
     // Check if already unlocked
-    if (unlockedTechnologies.includes(technologyId)) {
-      return NextResponse.json(
-        { success: false, error: 'Technology already unlocked' },
-        { status: 400 }
-      );
+    if (unlockedTechnologies.includes(validated.technologyId)) {
+      log.debug('Technology already unlocked', { 
+        username: validated.username, 
+        technologyId: validated.technologyId 
+      });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: 'Technology already unlocked'
+      });
     }
 
     // Check prerequisites
     for (const prereqId of technology.prerequisites) {
       if (!unlockedTechnologies.includes(prereqId)) {
         const prereq = TECHNOLOGIES[prereqId];
-        return NextResponse.json(
-          {
-            success: false,
-            error: `Prerequisite not met: ${prereq?.name || prereqId}`,
-          },
-          { status: 400 }
-        );
+        log.debug('Prerequisite not met', { 
+          username: validated.username,
+          required: prereqId,
+          name: prereq?.name 
+        });
+        return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+          message: `Prerequisite not met: ${prereq?.name || prereqId}`
+        });
       }
     }
 
     // Check if player has enough gold
     if (player.gold < technology.cost) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Insufficient gold. Required: ${technology.cost}, Available: ${player.gold}`,
-        },
-        { status: 400 }
-      );
+      log.debug('Insufficient gold', { 
+        username: validated.username,
+        required: technology.cost,
+        available: player.gold 
+      });
+      return createErrorResponse(ErrorCode.INSUFFICIENT_RESOURCES, {
+        message: `Insufficient gold. Required: ${technology.cost}, Available: ${player.gold}`
+      });
     }
 
-    // Deduct gold and unlock technology
+    // Deduct gold and unlock technology atomically
     const updateResult = await playersCollection.updateOne(
-      { username: username },
+      { username: validated.username },
       {
         $inc: { gold: -technology.cost },
-        $push: { unlockedTechnologies: technologyId },
+        $push: { unlockedTechnologies: validated.technologyId } as any,
         $set: { lastUpdated: new Date() },
       }
     );
 
     if (updateResult.modifiedCount === 0) {
-      return NextResponse.json(
-        { success: false, error: 'Failed to update player' },
-        { status: 500 }
-      );
+      log.error('Failed to update player', new Error('Database update failed'), {
+        username: validated.username,
+        technologyId: validated.technologyId
+      });
+      return createErrorResponse(ErrorCode.INTERNAL_ERROR, {
+        message: 'Failed to update player'
+      });
     }
 
     // Fetch updated player
     const updatedPlayer = await playersCollection.findOne({
-      username: username,
+      username: validated.username,
     });
 
-    console.log(`✅ ${player.username} researched ${technology.name}`);
+    log.info('Technology researched successfully', { 
+      username: validated.username,
+      technology: technology.name,
+      cost: technology.cost
+    });
 
     return NextResponse.json({
       success: true,
@@ -192,14 +217,19 @@ export async function POST(request: NextRequest) {
         name: technology.name,
       },
     });
+
   } catch (error) {
-    console.error('❌ Research API error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to research technology' },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      log.warn('Research validation failed', { issues: error.issues });
+      return createValidationErrorResponse(error);
+    }
+
+    log.error('Research error', error as Error);
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // GET HANDLER

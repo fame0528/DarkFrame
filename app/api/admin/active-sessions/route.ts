@@ -1,6 +1,7 @@
 /**
  * @file app/api/admin/active-sessions/route.ts
  * @created 2025-10-18
+ * @updated 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * @overview Get all currently active player sessions
  * 
  * OVERVIEW:
@@ -9,6 +10,7 @@
  * and their activity levels. Used by admin dashboard for live player count.
  * 
  * Access: Admin only (rank >= 5)
+ * Rate Limited: 500 req/min (admin analytics)
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -16,6 +18,17 @@ import { getCollection } from '@/lib/mongodb';
 import { PlayerSession } from '@/types';
 import { getAuthenticatedUser } from '@/lib/authMiddleware';
 import { detectSessionAbuse } from '@/lib/antiCheatDetector';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 /**
  * GET /api/admin/active-sessions
@@ -34,15 +47,17 @@ import { detectSessionAbuse } from '@/lib/antiCheatDetector';
  * @example
  * GET /api/admin/active-sessions
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminActiveSessionsAPI');
+  const endTimer = log.time('fetch-active-sessions');
+
   try {
     const user = await getAuthenticatedUser();
 
     if (!user || (user.rank ?? 0) < 5) {
-      return NextResponse.json(
-        { success: false, error: 'Admin access required (rank 5+)' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin access required (rank 5+)',
+      });
     }
 
     const sessionCollection = await getCollection<PlayerSession>('playerSessions');
@@ -87,6 +102,13 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    log.info('Active sessions fetched successfully', {
+      totalActive,
+      longestSessionHours: Math.floor(longestSession / 3600),
+      abusiveCount: abusiveSessions.length,
+      adminUser: user.username,
+    });
+
     return NextResponse.json({
       success: true,
       sessions: sessionsWithDuration,
@@ -101,13 +123,12 @@ export async function GET(request: NextRequest) {
       })),
     });
   } catch (error) {
-    console.error('Active sessions API error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch active sessions' },
-      { status: 500 }
-    );
+    log.error('Failed to fetch active sessions', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

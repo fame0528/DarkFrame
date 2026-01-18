@@ -15,13 +15,14 @@
  * - Barrier: 150M/150E, DEF 3
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { connectToDatabase } from '@/lib/mongodb';
 import { UnitType, UNIT_CONFIGS, Factory } from '@/types';
 import { applySlotRegeneration, hasEnoughSlots, consumeSlots } from '@/lib/slotRegenService';
 import { awardXP, XPAction } from '@/lib/xpService';
 import { trackUnitBuilt } from '@/lib/statTrackingService';
+import { withRequestLogging, createRouteLogger } from '@/lib';
 
 interface BuildUnitRequest {
   factoryX: number;
@@ -39,13 +40,17 @@ interface BuildUnitRequest {
  * @body unitType - Type of unit to build (RIFLEMAN/SCOUT/BUNKER/BARRIER)
  * @body quantity - Number of units to build (optional, default: 1)
  */
-export async function POST(request: Request) {
+export const POST = withRequestLogging(async (request: NextRequest) => {
+  const log = createRouteLogger('FactoryBuildUnitAPI');
+  const endTimer = log.time('buildFactoryUnit');
+  
   try {
     // 1. Verify authentication
     const cookieStore = await cookies();
     const sessionCookie = cookieStore.get('darkframe_session');
     
     if (!sessionCookie) {
+      log.warn('Unauthenticated factory build attempt');
       return NextResponse.json(
         { success: false, message: 'Not authenticated' },
         { status: 401 }
@@ -58,8 +63,11 @@ export async function POST(request: Request) {
     const body: BuildUnitRequest = await request.json();
     const { factoryX, factoryY, unitType, quantity = 1 } = body;
 
+    log.debug('Factory unit build request', { username, factoryX, factoryY, unitType, quantity });
+
     // 3. Validate inputs
     if (!factoryX || !factoryY || !unitType) {
+      log.warn('Missing required fields', { username, factoryX, factoryY, unitType });
       return NextResponse.json(
         { success: false, message: 'Missing required fields: factoryX, factoryY, unitType' },
         { status: 400 }
@@ -67,6 +75,7 @@ export async function POST(request: Request) {
     }
 
     if (!Object.values(UnitType).includes(unitType)) {
+      log.warn('Invalid unit type', { username, unitType });
       return NextResponse.json(
         { success: false, message: `Invalid unit type. Must be one of: ${Object.values(UnitType).join(', ')}` },
         { status: 400 }
@@ -74,6 +83,7 @@ export async function POST(request: Request) {
     }
 
     if (quantity < 1 || quantity > 100) {
+      log.warn('Invalid quantity', { username, quantity });
       return NextResponse.json(
         { success: false, message: 'Quantity must be between 1 and 100' },
         { status: 400 }
@@ -94,6 +104,7 @@ export async function POST(request: Request) {
     let factory = await factoriesCollection.findOne({ x: factoryX, y: factoryY });
 
     if (!factory) {
+      log.warn('Factory not found', { username, factoryX, factoryY });
       return NextResponse.json(
         { success: false, message: 'Factory not found at specified coordinates' },
         { status: 404 }
@@ -102,6 +113,7 @@ export async function POST(request: Request) {
 
     // 7. Verify ownership
     if (factory.owner !== username) {
+      log.warn('Factory ownership violation', { username, factoryOwner: factory.owner, factoryX, factoryY });
       return NextResponse.json(
         { success: false, message: 'You do not own this factory' },
         { status: 403 }
@@ -114,6 +126,7 @@ export async function POST(request: Request) {
     // 9. Check slot availability
     if (!hasEnoughSlots(regeneratedFactory, totalSlotCost)) {
       const available = Math.max(0, regeneratedFactory.slots - regeneratedFactory.usedSlots);
+      log.warn('Insufficient factory slots', { username, needed: totalSlotCost, available });
       return NextResponse.json(
         {
           success: false,
@@ -129,6 +142,7 @@ export async function POST(request: Request) {
     const player = await playersCollection.findOne({ username });
 
     if (!player) {
+      log.warn('Player not found for factory build', { username });
       return NextResponse.json(
         { success: false, message: 'Player not found' },
         { status: 404 }
@@ -137,6 +151,13 @@ export async function POST(request: Request) {
 
     // 11. Check resource availability
     if (player.resources.metal < totalMetalCost || player.resources.energy < totalEnergyCost) {
+      log.warn('Insufficient resources for factory build', { 
+        username, 
+        metalNeeded: totalMetalCost, 
+        metalHave: player.resources.metal,
+        energyNeeded: totalEnergyCost,
+        energyHave: player.resources.energy
+      });
       return NextResponse.json(
         {
           success: false,
@@ -192,7 +213,6 @@ export async function POST(request: Request) {
       { x: factoryX, y: factoryY },
       {
         $set: {
-          slots: updatedFactory.slots,
           usedSlots: updatedFactory.usedSlots,
           lastSlotRegen: updatedFactory.lastSlotRegen
         }
@@ -204,6 +224,15 @@ export async function POST(request: Request) {
 
     // 17. Award XP for unit building (5 XP per unit)
     const xpResult = await awardXP(username, XPAction.UNIT_BUILD, quantity);
+
+    log.info('Factory units built successfully', { 
+      username, 
+      unitType, 
+      quantity, 
+      strGained, 
+      defGained,
+      factoryLocation: { x: factoryX, y: factoryY }
+    });
 
     // 18. Return success with updated data
     return NextResponse.json({
@@ -237,7 +266,7 @@ export async function POST(request: Request) {
     });
 
   } catch (error) {
-    console.error('❌ Error building unit:', error);
+    log.error('Factory unit build error', error as Error);
     return NextResponse.json(
       {
         success: false,
@@ -246,8 +275,10 @@ export async function POST(request: Request) {
       },
       { status: 500 }
     );
+  } finally {
+    endTimer();
   }
-}
+});
 
 // ============================================================
 // IMPLEMENTATION NOTES

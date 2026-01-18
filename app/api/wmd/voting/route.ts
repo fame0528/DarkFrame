@@ -17,7 +17,20 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { connectToDatabase, getAuthenticatedPlayer } from '@/lib/wmd/apiHelpers';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createValidationErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+import { WMDVotingSchema } from '@/lib/validation/schemas';
+import { ZodError } from 'zod';
+import { connectToDatabase } from '@/lib/mongodb';
+import { getAuthenticatedPlayer } from '@/lib/wmd/apiHelpers';
 import {
   createClanVote,
   castVote,
@@ -28,6 +41,8 @@ import {
 import { getIO } from '@/lib/websocket/server';
 import { wmdHandlers } from '@/lib/websocket/handlers';
 
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
+
 /**
  * GET /api/wmd/voting
  * Fetch clan votes or check authorization
@@ -36,13 +51,18 @@ import { wmdHandlers } from '@/lib/websocket/handlers';
  * - action: 'list' | 'checkAuth'
  * - missileId: string (for checkAuth)
  */
-export async function GET(req: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (req: NextRequest) => {
+  const log = createRouteLogger('WMDVotingAPI');
+  const endTimer = log.time('wmd-voting-get');
+  
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
     
     const { searchParams } = new URL(req.url);
@@ -81,60 +101,56 @@ export async function GET(req: NextRequest) {
       });
     }
     
-    return NextResponse.json(
-      { error: 'Invalid action. Use "list" or "checkAuth"' },
-      { status: 400 }
-    );
+    return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+      message: 'Invalid action. Use "list" or "checkAuth"',
+    });
   } catch (error) {
-    console.error('Error in voting GET:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch voting data' },
-      { status: 500 }
-    );
+    log.error('Error in voting GET', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * POST /api/wmd/voting
  * Create vote or cast ballot
  * 
  * Body:
- * - action: 'create' | 'cast'
+ * - action: 'create' | 'cast' | 'veto'
  * - voteType: string (for create)
  * - targetId: string (for create)
  * - description: string (for create)
- * - voteId: string (for cast)
+ * - voteId: string (for cast/veto)
  * - vote: boolean (for cast)
+ * - reason: string (for veto)
  */
-export async function POST(req: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (req: NextRequest) => {
+  const log = createRouteLogger('WMDVotingAPI');
+  const endTimer = log.time('wmd-voting-post');
+  
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
     
     if (!auth.player.clanId) {
-      return NextResponse.json(
-        { error: 'Not in a clan' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.CLAN_NOT_MEMBER, {
+        message: 'Must be in a clan to vote',
+      });
     }
     
-    const body = await req.json();
-    const { action } = body;
-    
-    if (!action) {
-      return NextResponse.json(
-        { error: 'Missing required field: action' },
-        { status: 400 }
-      );
-    }
+    // Validate request with discriminated union schema
+    const validated = WMDVotingSchema.parse(await req.json());
     
     // Create vote
-    if (action === 'create') {
-      const { voteType, targetId, targetUsername, warheadType, resourceAmount } = body;
+    if (validated.action === 'create') {
+      const { voteType, targetId, targetUsername, warheadType, resourceAmount } = validated;
       
       if (!voteType) {
         return NextResponse.json(
@@ -148,21 +164,22 @@ export async function POST(req: NextRequest) {
         auth.player.clanId,
         auth.playerId,
         auth.username,
-        voteType,
+        voteType as any, // Service expects VoteType enum, validated by schema
         {
           targetId,
           targetUsername,
-          warheadType,
+          warheadType: warheadType as any, // Service expects WarheadType enum
           resourceAmount,
         }
       );
       
       if (!result.success) {
-        return NextResponse.json(
-          { error: result.message },
-          { status: 400 }
-        );
+        return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+          message: result.message,
+        });
       }
+      
+      log.info('Clan vote created', { username: auth.username, voteType, voteId: result.voteId });
       
       return NextResponse.json({
         success: true,
@@ -172,23 +189,15 @@ export async function POST(req: NextRequest) {
     }
     
     // Cast vote
-    if (action === 'cast') {
-      const { voteId, vote } = body;
-      
-      if (!voteId || typeof vote !== 'boolean') {
-        return NextResponse.json(
-          { error: 'Missing required fields: voteId (string), vote (boolean)' },
-          { status: 400 }
-        );
-      }
+    if (validated.action === 'cast') {
+      const { voteId, vote } = validated;
       
       const result = await castVote(db, voteId, auth.username, vote);
       
       if (!result.success) {
-        return NextResponse.json(
-          { error: result.message },
-          { status: 400 }
-        );
+        return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+          message: result.message,
+        });
       }
       
       // Broadcast vote update to clan
@@ -212,6 +221,8 @@ export async function POST(req: NextRequest) {
         console.error('Failed to broadcast vote update:', broadcastError);
       }
       
+      log.info('Vote cast', { username: auth.username, voteId, vote, status: result.voteStatus });
+      
       return NextResponse.json({
         success: true,
         message: result.message,
@@ -220,23 +231,15 @@ export async function POST(req: NextRequest) {
     }
     
     // Veto vote (leader only)
-    if (action === 'veto') {
-      const { voteId, reason } = body;
-      
-      if (!voteId) {
-        return NextResponse.json(
-          { error: 'Missing required field: voteId' },
-          { status: 400 }
-        );
-      }
+    if (validated.action === 'veto') {
+      const { voteId, reason } = validated;
       
       const result = await vetoClanVote(db, voteId, auth.playerId, auth.username, reason);
       
       if (!result.success) {
-        return NextResponse.json(
-          { error: result.message },
-          { status: 400 }
-        );
+        return createErrorResponse(ErrorCode.CLAN_INSUFFICIENT_PERMISSION, {
+          message: result.message,
+        });
       }
       
       // Broadcast veto to clan
@@ -257,8 +260,10 @@ export async function POST(req: NextRequest) {
           });
         }
       } catch (broadcastError) {
-        console.error('Failed to broadcast veto:', broadcastError);
+        log.error('Failed to broadcast veto', broadcastError instanceof Error ? broadcastError : new Error(String(broadcastError)));
       }
+      
+      log.info('Vote vetoed', { username: auth.username, voteId, reason });
       
       return NextResponse.json({
         success: true,
@@ -266,15 +271,19 @@ export async function POST(req: NextRequest) {
       });
     }
     
-    return NextResponse.json(
-      { error: 'Invalid action. Use "create", "cast", or "veto"' },
-      { status: 400 }
-    );
+    // Should never reach here due to discriminated union
+    return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+      message: 'Invalid action',
+    });
+    
   } catch (error) {
-    console.error('Error in voting POST:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Error in voting POST', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
+

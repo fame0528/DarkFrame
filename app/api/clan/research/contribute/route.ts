@@ -1,73 +1,60 @@
 /**
- * Clan Research Contribution API Route
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/research/contribute/route.ts
+ * @created 2025-10-18
+ * @updated 2025-10-23 (FID-20251023-001: Refactored to use centralized auth + JSDoc)
  * 
  * OVERVIEW:
- * POST endpoint for contributing research points (RP) from player to clan pool.
- * Any clan member can contribute their personal RP to the shared research fund.
- * Validates player membership, RP balance, and contribution amount.
+ * Clan research contribution endpoint. Allows members to contribute personal RP to clan pool.
+ * Validates membership, balance, and updates both player and clan research points.
  * 
- * Features:
- * - RP contribution from player to clan
- * - Balance validation (player must have sufficient RP)
- * - Membership validation (player must be in clan)
- * - Activity logging for all contributions
- * - Returns updated clan RP total
+ * ROUTES:
+ * - POST /api/clan/research/contribute - Contribute RP to clan research fund
  * 
- * Integration:
- * - JWT authentication required
- * - Updates player.researchPoints (deduct)
- * - Updates clan.research.researchPoints (add)
- * - Logs to clan_activities collection
+ * AUTHENTICATION:
+ * - Requires clan membership via requireClanMembership()
  * 
- * @module app/api/clan/research/contribute/route
+ * BUSINESS RULES:
+ * - Any clan member can contribute RP
+ * - Player must have sufficient personal RP
+ * - Contribution amount must be positive
+ * - All contributions logged to activity feed
+ * - Updates both player (deduct) and clan (add) RP totals
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import clientPromise from '@/lib/mongodb';
+import { getClientAndDatabase, requireClanMembership } from '@/lib';
 import { contributeRP, initializeClanResearchService } from '@/lib/clanResearchService';
-
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'your-secret-key-min-32-chars-long!!'
-);
 
 /**
  * POST /api/clan/research/contribute
  * Contribute RP to clan research pool
  * 
- * Request body:
- * - amount: number (RP to contribute, must be > 0)
+ * @param request - NextRequest with authentication cookie and contribution amount in body
+ * @returns NextResponse with updated clan RP total
  * 
- * Response:
- * - success: boolean
- * - newTotal: number (updated clan RP total)
- * - contributed: number (amount contributed)
- * - message: string
+ * @example
+ * POST /api/clan/research/contribute
+ * Body: { amount: 500 }
+ * Response: { success: true, newTotal: 12500, contributed: 500, message: "Successfully contributed..." }
  * 
- * Errors:
- * - 401: No authentication
- * - 400: Invalid amount, not in clan, insufficient RP
- * - 404: Player not found
- * - 500: Server error
+ * @throws {400} Invalid amount (must be positive number)
+ * @throws {400} Insufficient research points
+ * @throws {401} Unauthorized
+ * @throws {500} Failed to contribute RP
  */
 export async function POST(request: NextRequest) {
   try {
-    // Authenticate user
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+    const { client, db } = await getClientAndDatabase();
 
-    const verified = await jwtVerify(token, JWT_SECRET);
-    const username = verified.payload.username as string;
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    const { auth, clanId } = result;
 
-    // Get request body
+    initializeClanResearchService(client, db);
+
     const body = await request.json();
     const { amount } = body;
 
-    // Validate amount
     if (!amount || typeof amount !== 'number' || amount <= 0) {
       return NextResponse.json(
         { error: 'Invalid contribution amount (must be positive number)' },
@@ -75,37 +62,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get database
-    const client = await clientPromise;
-    const db = client.db(process.env.MONGODB_DB || 'darkframe');
-    initializeClanResearchService(client, db);
-
-    // Get player
-    const player = await db.collection('players').findOne({ username });
-    if (!player) {
-      return NextResponse.json({ error: 'Player not found' }, { status: 404 });
-    }
-
-    // Check if player is in a clan
-    if (!player.clanId) {
-      return NextResponse.json(
-        { error: 'You are not in a clan' },
-        { status: 400 }
-      );
-    }
-
-    // Contribute RP
     try {
-      const result = await contributeRP(player.clanId, username, amount);
+      const contributionResult = await contributeRP(clanId, auth.username, amount);
 
       return NextResponse.json({
         success: true,
-        newTotal: result.newTotal,
-        contributed: result.contributed,
+        newTotal: contributionResult.newTotal,
+        contributed: contributionResult.contributed,
         message: `Successfully contributed ${amount} RP to clan research fund`,
       });
     } catch (err: any) {
-      // Handle specific errors
       if (err.message.includes('not a member')) {
         return NextResponse.json(
           { error: 'You are not a member of this clan' },
@@ -114,11 +80,11 @@ export async function POST(request: NextRequest) {
       }
       if (err.message.includes('Insufficient research points')) {
         return NextResponse.json(
-          { error: `Insufficient RP (you have ${player.researchPoints || 0})` },
+          { error: `Insufficient RP (you have ${auth.player.researchPoints || 0})` },
           { status: 400 }
         );
       }
-      throw err; // Re-throw unexpected errors
+      throw err;
     }
   } catch (error: any) {
     console.error('Error contributing RP:', error);

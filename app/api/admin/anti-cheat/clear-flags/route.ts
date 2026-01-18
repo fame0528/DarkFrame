@@ -1,5 +1,6 @@
 /**
  * 📅 Created: 2025-01-18
+ * 📅 Updated: 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * 🎯 OVERVIEW:
  * Clear Player Flags Endpoint
  * 
@@ -8,33 +9,44 @@
  * Does not remove bans - use unban endpoint for that.
  * 
  * POST /api/admin/anti-cheat/clear-flags
+ * Rate Limited: 30 req/hour (admin bot management)
  * Body: { username }
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authService';
 import clientPromise from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createValidationErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+import { ClearFlagsSchema } from '@/lib/validation/schemas';
+import { ZodError } from 'zod';
 
-export async function POST(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.adminBot);
+
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminClearFlagsAPI');
+  const endTimer = log.time('clear-flags');
+
   try {
     // Admin authentication
     const adminUser = await getAuthenticatedUser();
     if (!adminUser || !adminUser.rank || adminUser.rank < 5) {
-      return NextResponse.json(
-        { success: false, error: 'Admin access required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin access required (rank 5+)',
+      });
     }
 
     const body = await request.json();
-    const { username } = body;
-
-    if (!username) {
-      return NextResponse.json(
-        { success: false, error: 'Username required' },
-        { status: 400 }
-      );
-    }
+    const validated = ClearFlagsSchema.parse(body);
+    const { username } = validated;
 
     const client = await clientPromise;
     const db = client.db('game');
@@ -42,10 +54,10 @@ export async function POST(request: NextRequest) {
     // Check if player exists
     const player = await db.collection('players').findOne({ username });
     if (!player) {
-      return NextResponse.json(
-        { success: false, error: 'Player not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_PLAYER_NOT_FOUND, {
+        message: 'Player not found',
+        username,
+      });
     }
 
     // Get current flags for logging
@@ -72,6 +84,12 @@ export async function POST(request: NextRequest) {
       }
     });
 
+    log.info('Flags cleared successfully', {
+      username,
+      flagsCleared: result.deletedCount,
+      adminUser: adminUser.username,
+    });
+
     return NextResponse.json({
       success: true,
       message: `Cleared ${result.deletedCount} flags for ${username}`,
@@ -79,16 +97,15 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Clear flags error:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to clear flags'
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Failed to clear flags', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * 📝 IMPLEMENTATION NOTES:

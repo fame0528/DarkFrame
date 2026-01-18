@@ -27,6 +27,8 @@ import { StaggerChildren, StaggerItem } from '@/components/transitions/StaggerCh
 import { LoadingSpinner } from '@/components/transitions/LoadingSpinner';
 import { toast } from '@/lib/toast';
 import MasteryProgressBar from '@/components/MasteryProgressBar';
+import { formatNumber } from '@/utils/formatting';
+import { isTypingInInput } from '@/hooks/useKeyboardShortcut';
 
 // ============================================================
 // TYPE DEFINITIONS
@@ -117,10 +119,12 @@ const SpecializationPanel: React.FC = () => {
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() === 'p' && !e.ctrlKey && !e.altKey && !e.metaKey) {
-        const target = e.target as HTMLElement;
-        if (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA') {
-          setIsOpen(prev => !prev);
+        // Ignore if typing in input field
+        if (isTypingInInput()) {
+          return;
         }
+        
+        setIsOpen(prev => !prev);
       }
     };
 
@@ -256,8 +260,6 @@ const SpecializationPanel: React.FC = () => {
   // ============================================================
   // RENDER HELPERS
   // ============================================================
-
-  const formatNumber = (num: number) => num.toLocaleString();
 
   /**
    * Render doctrine card with bonuses and action buttons

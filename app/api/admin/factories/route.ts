@@ -1,6 +1,7 @@
 /**
  * Admin Factories Endpoint
  * Created: 2025-01-18
+ * Updated: 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * 
  * OVERVIEW:
  * Returns list of all factories in the game for admin inspection.
@@ -8,6 +9,7 @@
  * current production, and activity status.
  * 
  * Endpoint: GET /api/admin/factories
+ * Rate Limited: 500 req/min (admin dashboard)
  * Auth Required: Admin (rank >= 5)
  * 
  * Returns:
@@ -30,6 +32,17 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 /**
  * GET handler - Fetch all factories
@@ -37,25 +50,26 @@ import { getCollection } from '@/lib/mongodb';
  * Admin-only endpoint that returns comprehensive factory data for inspection.
  * Joins with players collection to get owner details.
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminFactoriesAPI');
+  const endTimer = log.time('factories');
+
   try {
     // Check admin authentication
     const { getAuthenticatedUser } = await import('@/lib/authMiddleware');
     const user = await getAuthenticatedUser();
 
     if (!user) {
-      return NextResponse.json(
-        { success: false, error: 'Not authenticated' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     // Check admin access (isAdmin flag required)
     if (user.isAdmin !== true) {
-      return NextResponse.json(
-        { success: false, error: 'Access denied - Admin only' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin access required',
+      });
     }
 
     // Get factories collection
@@ -105,18 +119,22 @@ export async function GET(request: NextRequest) {
       };
     });
 
+    log.info('Factories retrieved', {
+      total: factoriesData.length,
+      adminUser: user.username,
+    });
+
     return NextResponse.json({
       factories: factoriesData,
       total: factoriesData.length,
     });
   } catch (error) {
-    console.error('[AdminFactories] Failed to fetch factories:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch factories' },
-      { status: 500 }
-    );
+    log.error('Failed to fetch factories', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * IMPLEMENTATION NOTES:

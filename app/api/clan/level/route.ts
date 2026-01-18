@@ -1,26 +1,44 @@
 /**
- * Clan Level API Route
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/level/route.ts
+ * @created 2025-10-18
+ * @updated 2025-10-23 (FID-20251023-001: Refactored to use centralized auth + JSDoc)
  * 
  * OVERVIEW:
- * GET/POST endpoints for clan level progression and XP management.
+ * Clan level progression and XP management endpoints.
  * GET retrieves current level info with progress percentages and milestones.
  * POST awards XP to clan (system/admin only - called from game events).
  * 
- * Authentication:
- * - GET: Requires clan membership (any role)
+ * ROUTES:
+ * - GET /api/clan/level - Retrieve clan level information
+ * - POST /api/clan/level - Award XP to clan (internal use only)
+ * 
+ * AUTHENTICATION:
+ * - GET: Requires clan membership via requireClanMembership()
  * - POST: System-only (internal service calls, not direct player access)
  * 
- * Integration:
+ * BUSINESS RULES:
+ * - Level progression based on XP accumulation
+ * - Milestones unlock at specific levels (5, 10, 15, etc.)
+ * - XP sources: harvest, combat, research, building, territory, monuments
+ * - Level-up rewards automatically distributed to clan bank
+ * 
+ * INTEGRATION:
  * - clanLevelService for all level calculations
- * - clanService to verify membership
  * - Activity logging for XP awards and level ups
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import clientPromise from '@/lib/mongodb';
+import {
+  getClientAndDatabase,
+  requireClanMembership,
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 import {
   initializeClanLevelService,
   getClanLevelInfo,
@@ -29,128 +47,107 @@ import {
   getRecommendedXPSources,
   estimateTimeToNextLevel,
 } from '@/lib/clanLevelService';
-import { initializeClanService, getClanByPlayerId } from '@/lib/clanService';
 import { ClanXPSource } from '@/types/clan.types';
 
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'your-secret-key');
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
+const postRateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET /api/clan/level
- * 
  * Retrieve clan level information with progress and milestones
  * 
- * Query Parameters:
- * - detailed: 'true' to include milestones and recommendations (optional)
- * - estimate: 'true' to include time-to-next-level estimate (optional)
+ * @param request - NextRequest with authentication cookie and optional query params
+ * @returns NextResponse with level info, milestones, and time estimates
  * 
- * Response:
- * - 200: Level info with progress
- * - 401: Not authenticated
- * - 400: Not in clan
- * - 500: Server error
+ * @example
+ * GET /api/clan/level
+ * Response: { success: true, clanName: "Warriors", level: { currentLevel: 12, totalXP: 125000, ... } }
+ * 
+ * GET /api/clan/level?detailed=true&estimate=true
+ * Response: { ...basic, milestones: {...}, recommendedXPSources: [...], estimatedHoursToNextLevel: 24 }
+ * 
+ * @throws {400} Not in clan
+ * @throws {401} Unauthorized
+ * @throws {500} Failed to fetch clan level info
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('clan/level-get');
+  const endTimer = log.time('get-level');
+  
   try {
-    // Verify authentication
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
-    }
+    const { client, db } = await getClientAndDatabase();
 
-    const verified = await jwtVerify(token, JWT_SECRET);
-    const username = verified.payload.username as string;
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    const { clan, clanId } = result;
 
-    // Connect to database
-    const client = await clientPromise;
-    const db = client.db('darkframe');
-
-    // Initialize services
-    initializeClanService(client, db);
     initializeClanLevelService(client, db);
 
-    // Get player's clan
-    const playersCollection = db.collection('players');
-    const player = await playersCollection.findOne({ username });
-    if (!player) {
-      return NextResponse.json({ error: 'Player not found' }, { status: 404 });
-    }
-
-    const clan = await getClanByPlayerId(player._id.toString());
-    if (!clan) {
-      return NextResponse.json({ error: 'Not a member of any clan' }, { status: 400 });
-    }
-
-    // Get query parameters
     const { searchParams } = new URL(request.url);
     const includeDetailed = searchParams.get('detailed') === 'true';
     const includeEstimate = searchParams.get('estimate') === 'true';
 
-    // Get level info
-    const levelInfo = await getClanLevelInfo(clan._id!.toString());
+    const levelInfo = await getClanLevelInfo(clanId);
 
-    // Build response
     const response: any = {
       success: true,
-      clanId: clan._id!.toString(),
+      clanId,
       clanName: clan.name,
       clanTag: clan.tag,
       level: levelInfo,
     };
 
-    // Add detailed information if requested
     if (includeDetailed) {
-      const milestones = await getClanMilestones(clan._id!.toString());
+      const milestones = await getClanMilestones(clanId);
       const recommendations = getRecommendedXPSources();
 
       response.milestones = milestones;
       response.recommendedXPSources = recommendations;
     }
 
-    // Add time estimate if requested
     if (includeEstimate) {
-      const estimate = await estimateTimeToNextLevel(clan._id!.toString());
+      const estimate = await estimateTimeToNextLevel(clanId);
       response.estimatedHoursToNextLevel = estimate;
     }
 
+    log.info('Clan level retrieved', { clanId, level: levelInfo.currentLevel, xp: levelInfo.totalXP });
     return NextResponse.json(response, { status: 200 });
   } catch (error: any) {
-    console.error('Error fetching clan level info:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch clan level info', details: error.message },
-      { status: 500 }
-    );
+    log.error('Failed to fetch clan level info', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * POST /api/clan/level
- * 
  * Award XP to a clan (system/admin only)
  * 
  * THIS ENDPOINT IS FOR INTERNAL USE ONLY
  * Called by game event handlers (harvesting, combat, research, etc.)
  * NOT intended for direct player access
  * 
- * Request Body:
- * {
- *   clanId: string,          // Clan to award XP to
- *   source: ClanXPSource,    // XP source type
- *   amount: number,          // Amount of action (resources, enemies, etc.)
- *   playerId: string         // Player who performed action
- * }
+ * @param request - NextRequest with XP award data in body
+ * @returns NextResponse with XP award result and level-up info
  * 
- * Response:
- * - 200: XP awarded successfully
- * - 400: Validation error
- * - 500: Server error
+ * @example
+ * POST /api/clan/level
+ * Body: { clanId: "abc123", source: "combat", amount: 5, playerId: "player123" }
+ * Response: { success: true, xpAwarded: 150, newLevel: 15, leveledUp: true, milestoneRewards: {...} }
+ * 
+ * @throws {400} Missing required fields
+ * @throws {400} Invalid amount or source
+ * @throws {500} Failed to award XP
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(postRateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('clan/level-post');
+  const endTimer = log.time('award-xp');
+  
   try {
-    // Parse request body
     const body = await request.json();
     const { clanId, source, amount, playerId } = body;
 
-    // Validate required fields
     if (!clanId || !source || amount === undefined || !playerId) {
       return NextResponse.json(
         { error: 'Missing required fields: clanId, source, amount, playerId' },
@@ -158,7 +155,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate amount
     if (typeof amount !== 'number' || amount <= 0) {
       return NextResponse.json(
         { error: 'Amount must be a positive number' },
@@ -166,7 +162,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate source
     const validSources: ClanXPSource[] = [
       'harvest',
       'combat',
@@ -184,17 +179,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Connect to database
-    const client = await clientPromise;
-    const db = client.db('darkframe');
+    const { client, db } = await getClientAndDatabase();
 
-    // Initialize service
     initializeClanLevelService(client, db);
 
-    // Award XP
     const result = await awardClanXP(clanId, source, amount, playerId);
 
-    // Build response
     const response: any = {
       success: result.success,
       xpAwarded: result.xpAwarded,
@@ -205,21 +195,20 @@ export async function POST(request: NextRequest) {
         : `${result.xpAwarded} XP awarded`,
     };
 
-    // Include milestone rewards if leveled up
     if (result.leveledUp && result.milestoneRewards) {
       response.milestoneRewards = result.milestoneRewards;
       response.message += ` | Milestone reached! Rewards: ${result.milestoneRewards.rewards.metal} Metal, ${result.milestoneRewards.rewards.energy} Energy, ${result.milestoneRewards.rewards.researchPoints} RP`;
     }
 
+    log.info('Clan XP awarded', { clanId, source, amount, leveledUp: result.leveledUp });
     return NextResponse.json(response, { status: 200 });
   } catch (error: any) {
-    console.error('Error awarding clan XP:', error);
-    return NextResponse.json(
-      { error: 'Failed to award clan XP', details: error.message },
-      { status: 500 }
-    );
+    log.error('Failed to award clan XP', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * IMPLEMENTATION NOTES:

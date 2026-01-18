@@ -7,24 +7,38 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authService';
 import { awardRP, spendRP } from '@/lib/researchPointService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const postRateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.adminBot);
 
 /**
  * POST /api/admin/rp-economy/bulk-adjust
  * Bulk adjust player RP balance (add or remove)
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(postRateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/rp-economy/bulk-adjust');
+  const endTimer = log.time('bulk-adjust-rp');
+
   try {
     // Verify admin authentication
     const adminUser = await getAuthenticatedUser();
     if (!adminUser?.isAdmin) {
-      return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED);
     }
 
     const body = await request.json();
     const { username, amount, reason, adminUsername } = body;
 
     if (!username || amount === 0 || !reason) {
-      return NextResponse.json({ error: 'Username, amount, and reason required' }, { status: 400 });
+      return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'Username, amount, and reason required');
     }
 
     let result;
@@ -48,8 +62,15 @@ export async function POST(request: NextRequest) {
     }
 
     if (!result.success) {
-      return NextResponse.json({ error: result.message }, { status: 400 });
+      return createErrorResponse(ErrorCode.VALIDATION_INVALID_FORMAT, result.message);
     }
+
+    log.info('RP adjustment completed', {
+      username,
+      amount,
+      newBalance: result.newBalance,
+      adminUser: adminUsername || adminUser.username,
+    });
 
     return NextResponse.json({
       success: true,
@@ -58,7 +79,9 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Error adjusting RP:', error);
-    return NextResponse.json({ error: 'Failed to adjust RP' }, { status: 500 });
+    log.error('Failed to adjust RP', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

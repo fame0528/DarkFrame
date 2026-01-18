@@ -2,6 +2,7 @@
  * @fileoverview Admin Bot Spawn Control API - Manual bot creation
  * @module app/api/admin/bot-spawn/route
  * @created 2025-10-18
+ * @updated 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * 
  * OVERVIEW:
  * Admin-only endpoint for manually spawning bots with custom configurations.
@@ -11,6 +12,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authMiddleware';
 import clientPromise from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createValidationErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+import { BotSpawnSchema } from '@/lib/validation/schemas';
+import { ZodError } from 'zod';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.adminBot);
 
 // ============================================================================
 // POST - Spawn Bot
@@ -18,6 +33,7 @@ import clientPromise from '@/lib/mongodb';
 
 /**
  * POST /api/admin/bot-spawn
+ * Rate Limited: 30 req/hour (admin bot management)
  * Manually spawn a bot with custom configuration
  * Requires admin privileges (rank >= 5)
  * 
@@ -30,15 +46,17 @@ import clientPromise from '@/lib/mongodb';
  *   count?: number (default 1, max 10)
  * }
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminBotSpawnAPI');
+  const endTimer = log.time('bot-spawn');
+
   try {
     // Authenticate user
     const tokenPayload = await getAuthenticatedUser();
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     // Check admin privileges
@@ -47,38 +65,15 @@ export async function POST(request: NextRequest) {
     const player = await db.collection('players').findOne({ username: tokenPayload.username });
 
     if (!player || !player.rank || player.rank < 5) {
-      return NextResponse.json(
-        { error: 'Admin privileges required (rank 5+)' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin privileges required (rank 5+)',
+      });
     }
 
     // Parse request body
     const body = await request.json();
-    const { specialization, tier, position, isSpecialBase, count = 1 } = body;
-
-    // Validate inputs
-    const validSpecializations = ['Hoarder', 'Fortress', 'Raider', 'Balanced', 'Ghost'];
-    if (!validSpecializations.includes(specialization)) {
-      return NextResponse.json(
-        { error: `Invalid specialization. Must be one of: ${validSpecializations.join(', ')}` },
-        { status: 400 }
-      );
-    }
-
-    if (!tier || tier < 1 || tier > 6) {
-      return NextResponse.json(
-        { error: 'Tier must be between 1 and 6' },
-        { status: 400 }
-      );
-    }
-
-    if (count < 1 || count > 10) {
-      return NextResponse.json(
-        { error: 'Count must be between 1 and 10' },
-        { status: 400 }
-      );
-    }
+    const validated = BotSpawnSchema.parse(body);
+    const { specialization, tier, position, isSpecialBase, count = 1 } = validated;
 
     // Generate bots
     const spawnedBots: string[] = [];
@@ -140,22 +135,29 @@ export async function POST(request: NextRequest) {
       spawnedBots.push(username);
     }
 
+    log.info('Bots spawned successfully', {
+      count,
+      specialization,
+      tier,
+      bots: spawnedBots,
+      adminUser: tokenPayload.username,
+    });
+
     return NextResponse.json({
       success: true,
       message: `Spawned ${count} bot(s) successfully`,
       bots: spawnedBots,
     });
   } catch (error) {
-    console.error('Bot spawn error:', error);
-    return NextResponse.json(
-      {
-        error: 'Failed to spawn bot',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Failed to spawn bot', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================================
 // IMPLEMENTATION NOTES

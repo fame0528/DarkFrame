@@ -37,8 +37,12 @@ export default function BattleLogLinks() {
             landMines: data.landMineCount || 0
           });
         }
+        // Silently ignore errors (API might be rate limited or temporarily unavailable)
       } catch (error) {
-        console.error('Failed to fetch log counts:', error);
+        // Only log in development
+        if (process.env.NODE_ENV === 'development') {
+          console.warn('Failed to fetch log counts:', error instanceof Error ? error.message : String(error));
+        }
       }
     };
 

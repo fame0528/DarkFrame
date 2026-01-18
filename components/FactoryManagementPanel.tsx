@@ -27,14 +27,19 @@ import { StaggerChildren, StaggerItem } from './transitions/StaggerChildren';
 import { LoadingSpinner } from './transitions/LoadingSpinner';
 import { toast } from '@/lib/toast';
 import { useCountUp } from '@/hooks/useCountUp';
-import { Factory as FactoryIcon, MapPin, TrendingUp, Trash2, AlertTriangle, Info } from 'lucide-react';
+import { Factory as FactoryIcon, MapPin, TrendingUp, Trash2, AlertTriangle, Info, Filter } from 'lucide-react';
 
 interface FactoryData {
   factory: Factory;
   stats: { level: number; maxSlots: number; regenRate: number };
   upgradeCost: { metal: number; energy: number; level: number } | null;
   canUpgrade: boolean;
-  upgradeProgress: number;
+  upgradeProgress: {
+    level: number;
+    percentage: number;
+    slotsUsed: number;
+    slotsRequired: number;
+  };
   availableSlots: number;
   timeUntilNextSlot: { hours: number; minutes: number; seconds: number; totalMs: number };
 }
@@ -46,6 +51,8 @@ interface FactoryManagementPanelProps {
   onNavigate: (x: number, y: number) => void;
 }
 
+type SortOption = 'level' | 'slots' | 'location';
+
 export default function FactoryManagementPanel({ isOpen, onClose, username, onNavigate }: FactoryManagementPanelProps) {
   const [factories, setFactories] = useState<FactoryData[]>([]);
   const [loading, setLoading] = useState(false);
@@ -55,6 +62,9 @@ export default function FactoryManagementPanel({ isOpen, onClose, username, onNa
   const [totalInvestment, setTotalInvestment] = useState({ metal: 0, energy: 0, total: 0 });
   const [playerResources, setPlayerResources] = useState({ metal: 0, energy: 0 });
   const [abandonConfirm, setAbandonConfirm] = useState<{ x: number; y: number } | null>(null);
+  const [batchReleaseMode, setBatchReleaseMode] = useState(false);
+  const [slotThreshold, setSlotThreshold] = useState(20);
+  const [sortBy, setSortBy] = useState<SortOption>('level');
 
   const investmentMetal = useCountUp(totalInvestment.metal, { duration: 1000 });
   const investmentEnergy = useCountUp(totalInvestment.energy, { duration: 1000 });
@@ -106,10 +116,10 @@ export default function FactoryManagementPanel({ isOpen, onClose, username, onNa
 
   const handleAbandon = async (x: number, y: number) => {
     try {
-      const response = await fetch('/api/factory/abandon', {
+      const response = await fetch('/api/factory/release', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ factoryX: x, factoryY: y })
+        body: JSON.stringify({ mode: 'single', factoryX: x, factoryY: y })
       });
       const data = await response.json();
       if (data.success) {
@@ -120,8 +130,61 @@ export default function FactoryManagementPanel({ isOpen, onClose, username, onNa
         toast.error(data.error);
       }
     } catch {
-      toast.error('Failed to abandon factory');
+      toast.error('Failed to release factory');
     }
+  };
+
+  const handleBatchRelease = async () => {
+    const matchingFactories = factories.filter(f => f.stats.maxSlots <= slotThreshold);
+    
+    if (matchingFactories.length === 0) {
+      toast.error(`No factories found with ${slotThreshold} or fewer slots`);
+      return;
+    }
+
+    if (!confirm(`Release ${matchingFactories.length} ${matchingFactories.length === 1 ? 'factory' : 'factories'} with ${slotThreshold} or fewer slots?\n\nThis cannot be undone!`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/factory/release', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'batch', slotThreshold })
+      });
+      const data = await response.json();
+      if (data.success) {
+        toast.success(data.message);
+        setBatchReleaseMode(false);
+        fetchFactories();
+      } else {
+        toast.error(data.error);
+      }
+    } catch {
+      toast.error('Failed to batch release factories');
+    }
+  };
+
+  const getSortedFactories = () => {
+    const sorted = [...factories];
+    
+    switch (sortBy) {
+      case 'level':
+        sorted.sort((a, b) => {
+          const levelDiff = (b.factory.level || 1) - (a.factory.level || 1);
+          if (levelDiff !== 0) return levelDiff;
+          return a.factory.y - b.factory.y || a.factory.x - b.factory.x;
+        });
+        break;
+      case 'slots':
+        sorted.sort((a, b) => b.stats.maxSlots - a.stats.maxSlots);
+        break;
+      case 'location':
+        sorted.sort((a, b) => a.factory.y - b.factory.y || a.factory.x - b.factory.x);
+        break;
+    }
+    
+    return sorted;
   };
 
   if (!isOpen) return null;
@@ -147,6 +210,71 @@ export default function FactoryManagementPanel({ isOpen, onClose, username, onNa
               <Info className="w-4 h-4" />
               Current Resources: {playerResources.metal.toLocaleString()} M + {playerResources.energy.toLocaleString()} E
             </div>
+            
+            {/* Batch Release Controls */}
+            {factoryCount > 0 && (
+              <div className="mt-3 p-3 bg-bg-primary border border-border-light rounded-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+                    <Filter className="w-4 h-4" />
+                    Batch Management
+                  </h3>
+                  <Button 
+                    onClick={() => setBatchReleaseMode(!batchReleaseMode)} 
+                    variant={batchReleaseMode ? "danger" : "secondary"} 
+                    size="sm"
+                  >
+                    {batchReleaseMode ? 'Cancel' : 'Batch Release'}
+                  </Button>
+                </div>
+                
+                {batchReleaseMode && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-text-secondary whitespace-nowrap">Max Slots:</label>
+                      <input
+                        type="range"
+                        min="10"
+                        max="30"
+                        step="2"
+                        value={slotThreshold}
+                        onChange={(e) => setSlotThreshold(parseInt(e.target.value))}
+                        className="flex-1"
+                      />
+                      <Badge variant="warning">{slotThreshold}</Badge>
+                    </div>
+                    <div className="text-xs text-text-tertiary mb-2">
+                      {factories.filter(f => f.stats.maxSlots <= slotThreshold).length} factories will be released
+                    </div>
+                    <Button 
+                      onClick={handleBatchRelease} 
+                      variant="danger" 
+                      size="sm" 
+                      className="w-full"
+                      disabled={factories.filter(f => f.stats.maxSlots <= slotThreshold).length === 0}
+                    >
+                      <Trash2 className="w-4 h-4 mr-1" />
+                      Release All ≤ {slotThreshold} Slots
+                    </Button>
+                  </div>
+                )}
+                
+                {!batchReleaseMode && (
+                  <div className="flex items-center gap-2">
+                    <label className="text-xs text-text-secondary">Sort by:</label>
+                    <select 
+                      value={sortBy} 
+                      onChange={(e) => setSortBy(e.target.value as SortOption)}
+                      className="flex-1 bg-bg-secondary border border-border-light rounded px-2 py-1 text-xs text-text-primary"
+                    >
+                      <option value="level">Level (High to Low)</option>
+                      <option value="slots">Max Slots (High to Low)</option>
+                      <option value="location">Location (Y, X)</option>
+                    </select>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 bg-bg-primary">
@@ -161,7 +289,7 @@ export default function FactoryManagementPanel({ isOpen, onClose, username, onNa
             )}
             {!loading && !error && factories.length > 0 && (
               <StaggerChildren staggerDelay={0.05} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {factories.map(({ factory, stats, upgradeCost, canUpgrade, upgradeProgress, availableSlots, timeUntilNextSlot }) => (
+                {getSortedFactories().map(({ factory, stats, upgradeCost, canUpgrade, upgradeProgress, availableSlots, timeUntilNextSlot }) => (
                   <StaggerItem key={`${factory.x},${factory.y}`}>
                     <Card className="h-full hover:border-accent-primary/50 transition-colors">
                       <div className="flex justify-between items-start mb-3">
@@ -171,7 +299,7 @@ export default function FactoryManagementPanel({ isOpen, onClose, username, onNa
                         </div>
                         <div className="text-right">
                           <div className="text-xs text-text-tertiary">Progress</div>
-                          <Badge variant="warning">{upgradeProgress}%</Badge>
+                          <Badge variant="warning">{upgradeProgress.percentage}%</Badge>
                         </div>
                       </div>
                       <Divider className="my-3" />

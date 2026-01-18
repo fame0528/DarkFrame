@@ -62,7 +62,7 @@ export default function WebSocketTestPage() {
     
     emit('chat:send_message', {
       content: message.trim(),
-      clanId: 'global'
+      channelId: 'global'
     });
 
     setMessage('');

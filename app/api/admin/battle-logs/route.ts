@@ -1,6 +1,7 @@
 /**
  * Admin Battle Logs Endpoint
  * Created: 2025-01-18
+ * Updated: 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * 
  * OVERVIEW:
  * Returns list of all battle logs in the game for admin inspection.
@@ -8,6 +9,7 @@
  * resources transferred, XP gained, and timestamps.
  * 
  * Endpoint: GET /api/admin/battle-logs
+ * Rate Limited: 500 req/min (admin dashboard)
  * Auth Required: Admin (FAME account only)
  * 
  * Returns:
@@ -31,6 +33,17 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 /**
  * GET handler - Fetch all battle logs
@@ -38,25 +51,26 @@ import { getCollection } from '@/lib/mongodb';
  * Admin-only endpoint that returns comprehensive battle log data for inspection.
  * Sorted by timestamp (newest first).
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminBattleLogsAPI');
+  const endTimer = log.time('battle-logs');
+
   try {
     // Check admin authentication
     const { getAuthenticatedUser } = await import('@/lib/authMiddleware');
     const user = await getAuthenticatedUser();
 
     if (!user) {
-      return NextResponse.json(
-        { success: false, error: 'Not authenticated' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     // Check admin access (isAdmin flag required)
     if (user.isAdmin !== true) {
-      return NextResponse.json(
-        { success: false, error: 'Access denied - Admin only' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin access required',
+      });
     }
 
     // Get battle logs collection
@@ -115,18 +129,22 @@ export async function GET(request: NextRequest) {
       };
     });
 
+    log.info('Battle logs retrieved', {
+      total: logsData.length,
+      adminUser: user.username,
+    });
+
     return NextResponse.json({
       logs: logsData,
       total: logsData.length,
     });
   } catch (error) {
-    console.error('[AdminBattleLogs] Failed to fetch battle logs:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch battle logs' },
-      { status: 500 }
-    );
+    log.error('Failed to fetch battle logs', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * IMPLEMENTATION NOTES:

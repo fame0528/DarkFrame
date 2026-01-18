@@ -162,6 +162,12 @@ const indexes: IndexDefinition[] = [
     name: 'username_lookup',
     description: 'Fast username lookup (case-sensitive)',
   },
+  {
+    collection: 'players',
+    index: { email: 1 },
+    name: 'email_lookup_unique',
+    description: 'Fast email lookup for login (unique constraint)',
+  },
 
   // ========================================
   // AUCTIONS COLLECTION
@@ -247,6 +253,74 @@ const indexes: IndexDefinition[] = [
     index: { expiresAt: 1 },
     name: 'expiring_blessings',
     description: 'Find blessings that are expiring soon (for cleanup)',
+  },
+
+  // ========================================
+  // TUTORIAL SYSTEM COLLECTION
+  // ========================================
+  {
+    collection: 'tutorial_progress',
+    index: { playerId: 1 },
+    name: 'player_tutorial_progress',
+    description: 'Fast lookup of player tutorial progress (unique constraint)',
+  },
+  {
+    collection: 'tutorial_progress',
+    index: { tutorialComplete: 1, completedAt: -1 },
+    name: 'completed_tutorials',
+    description: 'Analytics: find completed tutorials sorted by completion date',
+  },
+  {
+    collection: 'tutorial_progress',
+    index: { currentQuestId: 1, tutorialSkipped: 1 },
+    name: 'active_quest_tracking',
+    description: 'Fast lookup of players on specific quest (for analytics)',
+  },
+  {
+    collection: 'tutorial_action_tracking',
+    index: { playerId: 1, stepId: 1 },
+    name: 'player_step_tracking',
+    description: 'Fast lookup of action tracking for specific step (unique constraint)',
+  },
+  {
+    collection: 'tutorial_action_tracking',
+    index: { lastUpdated: 1 },
+    name: 'stale_tracking_cleanup',
+    description: 'Find stale action tracking records (for cleanup)',
+  },
+
+  // ========================================
+  // HTTP POLLING SYSTEM (FID-20251026-017)
+  // ========================================
+  {
+    collection: 'typing_indicators',
+    index: { expiresAt: 1 },
+    name: 'typing_ttl',
+    description: 'TTL index for automatic cleanup of typing indicators (5s expiry)',
+  },
+  {
+    collection: 'typing_indicators',
+    index: { channelId: 1, userId: 1 },
+    name: 'channel_user_typing',
+    description: 'Unique constraint for typing indicators per user per channel',
+  },
+  {
+    collection: 'user_presence',
+    index: { expiresAt: 1 },
+    name: 'presence_ttl',
+    description: 'TTL index for automatic cleanup of presence records (60s expiry)',
+  },
+  {
+    collection: 'user_presence',
+    index: { userId: 1 },
+    name: 'user_presence_lookup',
+    description: 'Unique constraint for presence records per user',
+  },
+  {
+    collection: 'user_presence',
+    index: { lastSeen: 1 },
+    name: 'online_users_lookup',
+    description: 'Fast query for online users (lastSeen > now - 60s)',
   },
 ];
 

@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/Button';
 import { Divider } from '@/components/ui/Divider';
 import { StaggerChildren, StaggerItem } from '@/components/transitions/StaggerChildren';
 import { LoadingSpinner } from '@/components/transitions/LoadingSpinner';
+import { isTypingInInput } from '@/hooks/useKeyboardShortcut';
 
 // ============================================================
 // TYPE DEFINITIONS
@@ -169,9 +170,10 @@ export default function DiscoveryLogPanel({ isOpen, onClose }: DiscoveryLogPanel
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'd' || e.key === 'D') {
-        const target = e.target as HTMLElement;
-        // Ignore if user is typing in an input
-        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+        // Ignore if typing in input field
+        if (isTypingInInput()) {
+          return;
+        }
         
         if (isOpen) {
           onClose();

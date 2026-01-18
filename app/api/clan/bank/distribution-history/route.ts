@@ -1,106 +1,69 @@
 /**
- * Clan Distribution History API
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/bank/distribution-history/route.ts
+ * @created 2025-10-18
+ * @updated 2025-01-23 (FID-20251023-001: Auth deduplication + JSDoc)
  * 
  * OVERVIEW:
  * API endpoint for viewing distribution history records.
- * Provides audit trail for all clan fund distributions.
+ * Provides audit trail for all clan fund distributions with pagination and filtering.
  * 
- * Endpoints:
- * - GET: View distribution history
+ * ROUTES:
+ * - GET /api/clan/bank/distribution-history - View clan distribution audit trail
  * 
- * Security:
- * - JWT authentication required
- * - Clan membership required
- * - View-only access for all members
+ * AUTHENTICATION:
+ * - requireClanMembership() - View-only access for all clan members
  * 
- * Features:
- * - Paginated history
- * - Filter by method
- * - Filter by distributor
- * - Date range filtering
- * 
- * @module app/api/clan/bank/distribution-history/route
+ * BUSINESS RULES:
+ * - History sorted by timestamp (newest first)
+ * - Paginated results (default 100, max 500 records)
+ * - Shows method, distributor, timestamp, amounts, and recipients
+ * - No deletion or modification of historical records
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import { MongoClient, Db, ObjectId } from 'mongodb';
-import { initializeDistributionService, getDistributionHistory } from '@/lib/clanDistributionService';
-
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'your-secret-key');
-const MONGODB_URI = process.env.MONGODB_URI || '';
-const MONGODB_DB = process.env.MONGODB_DB || 'darkframe';
-
-let cachedClient: MongoClient | null = null;
-let cachedDb: Db | null = null;
-
-async function connectToDatabase() {
-  if (cachedClient && cachedDb) {
-    return { client: cachedClient, db: cachedDb };
-  }
-
-  const client = await MongoClient.connect(MONGODB_URI);
-  const db = client.db(MONGODB_DB);
-
-  cachedClient = client;
-  cachedDb = db;
-
-  // Initialize distribution service
-  initializeDistributionService(client, db);
-
-  return { client, db };
-}
+import { ObjectId } from 'mongodb';
+import { getClientAndDatabase } from '@/lib/mongodb';
+import { requireClanMembership } from '@/lib/authMiddleware';
+import { getDistributionHistory } from '@/lib/clanDistributionService';
 
 /**
  * GET /api/clan/bank/distribution-history
- * 
  * View distribution history for player's clan
  * 
- * Query Parameters:
- * - limit (optional): Number of records to return (default 100, max 500)
+ * @param request - NextRequest with auth cookie and optional query params
+ * @returns NextResponse with distribution history or error
  * 
- * Response:
- * {
- *   "success": true,
- *   "history": [
+ * @example
+ * GET /api/clan/bank/distribution-history?limit=50
+ * Response: {
+ *   success: true,
+ *   history: [
  *     {
- *       "_id": "...",
- *       "method": "EQUAL_SPLIT",
- *       "distributedBy": "playerId",
- *       "distributedByUsername": "PlayerName",
- *       "timestamp": "2025-10-18T...",
- *       "totalDistributed": { "metal": 100000, "energy": 0, "rp": 0 },
- *       "recipients": [...],
- *       "notes": "Equal split: 10000 metal per member (10 members)"
- *     },
- *     ...
+ *       _id: "...",
+ *       method: "EQUAL_SPLIT",
+ *       distributedBy: "playerId",
+ *       distributedByUsername: "PlayerName",
+ *       timestamp: "2025-10-18T10:30:00Z",
+ *       totalDistributed: { metal: 100000, energy: 0, rp: 0 },
+ *       recipients: [{ playerId: "...", username: "...", amount: 10000 }],
+ *       notes: "Equal split: 10000 metal per member"
+ *     }
  *   ],
- *   "count": 25
+ *   count: 25
  * }
+ * 
+ * @throws {400} Not in clan
+ * @throws {401} Not authenticated
+ * @throws {403} Not a clan member
+ * @throws {500} Server error
  */
 export async function GET(request: NextRequest) {
   try {
-    // Verify authentication
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
-    }
+    const { db } = await getClientAndDatabase();
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
 
-    const { payload } = await jwtVerify(token, JWT_SECRET);
-    const playerId = payload.sub as string;
-
-    // Get player's clan
-    const { db } = await connectToDatabase();
-    const playersCollection = db.collection('players');
-    const player = await playersCollection.findOne({ _id: new ObjectId(playerId) });
-
-    if (!player || !player.clanId) {
-      return NextResponse.json({ error: 'Player is not in a clan' }, { status: 400 });
-    }
-
-    const clanId = player.clanId;
+    const { clanId } = result;
 
     // Get query params
     const searchParams = request.nextUrl.searchParams;
@@ -136,3 +99,4 @@ export async function GET(request: NextRequest) {
     );
   }
 }
+

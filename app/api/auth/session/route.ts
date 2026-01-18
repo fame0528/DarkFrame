@@ -12,12 +12,22 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 import { jwtVerify } from 'jose';
-import { logger } from '@/lib/logger';
 
 const JWT_SECRET = new TextEncoder().encode(
   process.env.JWT_SECRET || 'your-secret-key-change-in-production'
 );
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET /api/auth/session
@@ -34,23 +44,25 @@ const JWT_SECRET = new TextEncoder().encode(
  *   console.log('Logged in as:', data.username);
  * }
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('SessionValidationAPI');
+  const endTimer = log.time('validate-session');
+  
   try {
     // Get session cookie (server-side can read HttpOnly cookies)
     const token = request.cookies.get('darkframe_session')?.value;
     
     if (!token) {
-      logger.debug('No session cookie found');
-      return NextResponse.json(
-        { success: false, error: 'No session found' },
-        { status: 401 }
-      );
+      log.debug('No session cookie found');
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'No session found',
+      });
     }
     
     // Verify JWT token
     const { payload } = await jwtVerify(token, JWT_SECRET);
     
-    logger.debug('Session validated', { username: payload.username });
+    log.debug('Session validated', { username: payload.username });
     
     // Return username from token payload
     return NextResponse.json({
@@ -59,13 +71,14 @@ export async function GET(request: NextRequest) {
     });
     
   } catch (error) {
-    logger.error('Session validation failed', error instanceof Error ? error : new Error(String(error)));
-    return NextResponse.json(
-      { success: false, error: 'Invalid or expired session' },
-      { status: 401 }
-    );
+    log.error('Session validation failed', error instanceof Error ? error : new Error(String(error)));
+    return createErrorResponse(ErrorCode.AUTH_TOKEN_INVALID, {
+      message: 'Invalid or expired session',
+    });
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

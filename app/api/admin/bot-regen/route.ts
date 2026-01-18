@@ -2,6 +2,7 @@
  * @fileoverview Admin Bot Regeneration API - Force resource regeneration
  * @module app/api/admin/bot-regen/route
  * @created 2025-10-18
+ * @updated 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * 
  * OVERVIEW:
  * Admin-only endpoint for forcing bot resource regeneration cycles.
@@ -11,6 +12,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authMiddleware';
 import clientPromise from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createValidationErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+import { BotRegenSchema } from '@/lib/validation/schemas';
+import { ZodError } from 'zod';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.adminBot);
 
 // ============================================================================
 // POST - Force Bot Resource Regeneration
@@ -18,6 +33,7 @@ import clientPromise from '@/lib/mongodb';
 
 /**
  * POST /api/admin/bot-regen
+ * Rate Limited: 30 req/hour (admin bot management)
  * Manually triggers resource regeneration for all bots or specific bot
  * Requires admin privileges (rank >= 5)
  * 
@@ -26,15 +42,17 @@ import clientPromise from '@/lib/mongodb';
  *   username?: string // Specific bot username, or omit for all bots
  * }
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminBotRegenAPI');
+  const endTimer = log.time('bot-regen');
+
   try {
     // Authenticate user
     const tokenPayload = await getAuthenticatedUser();
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     // Check admin privileges
@@ -43,15 +61,15 @@ export async function POST(request: NextRequest) {
     const player = await db.collection('players').findOne({ username: tokenPayload.username });
 
     if (!player || !player.rank || player.rank < 5) {
-      return NextResponse.json(
-        { error: 'Admin privileges required (rank 5+)' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin privileges required (rank 5+)',
+      });
     }
 
     // Parse request body
     const body = await request.json().catch(() => ({}));
-    const { username } = body;
+    const validated = BotRegenSchema.parse(body);
+    const { username } = validated;
 
     // Build query
     const query: Record<string, unknown> = { isBot: true };
@@ -63,10 +81,10 @@ export async function POST(request: NextRequest) {
     const bots = await db.collection('players').find(query).toArray();
 
     if (bots.length === 0) {
-      return NextResponse.json(
-        { error: username ? 'Bot not found' : 'No bots found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_BOT_NOT_FOUND, {
+        message: username ? 'Bot not found' : 'No bots found',
+        username,
+      });
     }
 
     // Resource tier mapping
@@ -108,22 +126,27 @@ export async function POST(request: NextRequest) {
       regeneratedCount++;
     }
 
+    log.info('Bot resources regenerated', {
+      botsAffected: regeneratedCount,
+      username: username || 'all',
+      adminUser: tokenPayload.username,
+    });
+
     return NextResponse.json({
       success: true,
       message: `Regenerated resources for ${regeneratedCount} bot(s)`,
       botsAffected: regeneratedCount,
     });
   } catch (error) {
-    console.error('Bot regeneration error:', error);
-    return NextResponse.json(
-      {
-        error: 'Failed to regenerate bot resources',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Failed to regenerate bot resources', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================================
 // IMPLEMENTATION NOTES

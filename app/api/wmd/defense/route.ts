@@ -16,7 +16,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { connectToDatabase, getAuthenticatedPlayer } from '@/lib/wmd/apiHelpers';
+import { connectToDatabase } from '@/lib/mongodb';
+import { getAuthenticatedPlayer } from '@/lib/wmd/apiHelpers';
 import {
   deployBattery,
   attemptInterception,
@@ -26,6 +27,17 @@ import {
 } from '@/lib/wmd/defenseService';
 import { getIO } from '@/lib/websocket/server';
 import { wmdHandlers } from '@/lib/websocket/handlers';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET /api/wmd/defense
@@ -34,13 +46,16 @@ import { wmdHandlers } from '@/lib/websocket/handlers';
  * Query params:
  * - batteryId: string (optional) - Get specific battery details
  */
-export async function GET(req: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (req: NextRequest) => {
+  const log = createRouteLogger('wmd-defense-get');
+  const endTimer = log.time('defense-get');
+  
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
     
     const { searchParams } = new URL(req.url);
@@ -74,18 +89,18 @@ export async function GET(req: NextRequest) {
     // Get all player batteries
     const batteries = await getPlayerBatteries(db, auth.playerId);
     
+    log.info('Defense batteries retrieved', { playerId: auth.playerId, batteryCount: batteries.length });
     return NextResponse.json({
       success: true,
       batteries,
     });
   } catch (error) {
-    console.error('Error fetching batteries:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch defense batteries' },
-      { status: 500 }
-    );
+    log.error('Failed to fetch batteries', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * POST /api/wmd/defense
@@ -99,7 +114,7 @@ export async function GET(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
@@ -235,7 +250,7 @@ export async function POST(req: NextRequest) {
  */
 export async function DELETE(req: NextRequest) {
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {

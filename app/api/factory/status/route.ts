@@ -9,7 +9,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getFactoryData } from '@/lib/factoryService';
-import { applySlotRegeneration, getAvailableSlots, getTimeUntilNextSlot } from '@/lib/slotRegenService';
+import { applySlotRegeneration, getAvailableSlots, getTimeUntilNextSlot, getFactoryCapacity } from '@/lib/slotRegenService';
 import { connectToDatabase } from '@/lib/mongodb';
 
 export async function GET(request: NextRequest) {
@@ -34,19 +34,18 @@ export async function GET(request: NextRequest) {
       );
     }
     
-    // Apply slot regeneration
-    const originalSlots = factory.slots;
+    // Apply slot regeneration (new model: reduces usedSlots)
+    const originalUsed = factory.usedSlots;
     factory = applySlotRegeneration(factory);
     
-    // If slots were regenerated, update the database
-    if (factory.slots !== originalSlots) {
-      // Connect to database
+    // If usedSlots decreased, persist lastSlotRegen and usedSlots
+    if (factory.usedSlots !== originalUsed) {
       const db = await connectToDatabase();
       await db.collection('factories').updateOne(
         { x, y },
         {
           $set: {
-            slots: factory.slots,
+            usedSlots: factory.usedSlots,
             lastSlotRegen: factory.lastSlotRegen
           }
         }
@@ -62,9 +61,9 @@ export async function GET(request: NextRequest) {
       factory,
       slotInfo: {
         available: availableSlots,
-        max: 10,
+        max: getFactoryCapacity(factory),
         used: factory.usedSlots,
-        current: factory.slots,
+        current: availableSlots,
         timeUntilNext: timeUntilNext.totalMs > 0 ? {
           hours: timeUntilNext.hours,
           minutes: timeUntilNext.minutes,

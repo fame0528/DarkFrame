@@ -7,17 +7,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
 import { getAuthenticatedUser } from '@/lib/authService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 /**
  * GET /api/admin/rp-economy/transactions
  * Returns filtered RP transaction history
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/rp-economy/transactions');
+  const endTimer = log.time('get-rp-transactions');
+
   try {
     // Verify admin authentication
     const adminUser = await getAuthenticatedUser();
     if (!adminUser?.isAdmin) {
-      return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED);
     }
 
     const searchParams = request.nextUrl.searchParams;
@@ -57,10 +71,19 @@ export async function GET(request: NextRequest) {
       .limit(100)
       .toArray();
 
+    log.info('RP transactions retrieved', {
+      transactionCount: transactions.length,
+      period,
+      source,
+      usernameFilter: username || 'none',
+    });
+
     return NextResponse.json({ transactions });
 
   } catch (error) {
-    console.error('Error fetching RP transactions:', error);
-    return NextResponse.json({ error: 'Failed to fetch transactions' }, { status: 500 });
+    log.error('Failed to fetch RP transactions', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

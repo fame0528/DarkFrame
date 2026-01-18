@@ -26,6 +26,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { formatNumberAbbreviated } from '@/utils/formatting';
 
 interface LevelInfo {
   currentLevel: number;
@@ -127,13 +128,6 @@ export default function ClanLevelDisplay({
     return 'Novice';
   };
 
-  // Format large numbers
-  const formatNumber = (num: number): string => {
-    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
-    return num.toString();
-  };
-
   // Format feature name
   const formatFeatureName = (feature: string): string => {
     return feature
@@ -198,7 +192,7 @@ export default function ClanLevelDisplay({
         <div className="space-y-2">
           <div className="flex justify-between text-sm">
             <span className="text-gray-400">
-              XP: {formatNumber(levelInfo.currentLevelXP)} / {formatNumber(levelInfo.currentLevelXP + levelInfo.xpToNextLevel)}
+              XP: {formatNumberAbbreviated(levelInfo.currentLevelXP)} / {formatNumberAbbreviated(levelInfo.currentLevelXP + levelInfo.xpToNextLevel)}
             </span>
             <span className="text-cyan-400 font-bold">
               {levelInfo.progressPercentage}%
@@ -213,7 +207,7 @@ export default function ClanLevelDisplay({
           </div>
 
           <div className="flex justify-between text-xs text-gray-400">
-            <span>{formatNumber(levelInfo.xpToNextLevel)} XP to next level</span>
+            <span>{formatNumberAbbreviated(levelInfo.xpToNextLevel)} XP to next level</span>
             {estimatedHours !== null && estimatedHours > 0 && (
               <span>
                 Est. {estimatedHours < 24 ? `${estimatedHours}h` : `${Math.ceil(estimatedHours / 24)}d`}
@@ -239,19 +233,19 @@ export default function ClanLevelDisplay({
             <div className="bg-gray-800 rounded p-2 text-center">
               <div className="text-gray-400">Metal</div>
               <div className="text-orange-400 font-bold">
-                {formatNumber(levelInfo.nextMilestone.rewards.metal)}
+                {formatNumberAbbreviated(levelInfo.nextMilestone.rewards.metal)}
               </div>
             </div>
             <div className="bg-gray-800 rounded p-2 text-center">
               <div className="text-gray-400">Energy</div>
               <div className="text-blue-400 font-bold">
-                {formatNumber(levelInfo.nextMilestone.rewards.energy)}
+                {formatNumberAbbreviated(levelInfo.nextMilestone.rewards.energy)}
               </div>
             </div>
             <div className="bg-gray-800 rounded p-2 text-center">
               <div className="text-gray-400">RP</div>
               <div className="text-purple-400 font-bold">
-                {formatNumber(levelInfo.nextMilestone.rewards.researchPoints)}
+                {formatNumberAbbreviated(levelInfo.nextMilestone.rewards.researchPoints)}
               </div>
             </div>
           </div>
@@ -308,13 +302,13 @@ export default function ClanLevelDisplay({
                   </div>
                   <div className="flex gap-2 text-xs">
                     <span className="text-orange-400">
-                      {formatNumber(milestone.rewards.metal)} M
+                      {formatNumberAbbreviated(milestone.rewards.metal)} M
                     </span>
                     <span className="text-blue-400">
-                      {formatNumber(milestone.rewards.energy)} E
+                      {formatNumberAbbreviated(milestone.rewards.energy)} E
                     </span>
                     <span className="text-purple-400">
-                      {formatNumber(milestone.rewards.researchPoints)} RP
+                      {formatNumberAbbreviated(milestone.rewards.researchPoints)} RP
                     </span>
                   </div>
                 </div>
@@ -328,7 +322,7 @@ export default function ClanLevelDisplay({
         <div className="text-center">
           <div className="text-gray-400 text-sm">Total XP</div>
           <div className="text-white font-bold text-lg">
-            {formatNumber(levelInfo.totalXP)}
+            {formatNumberAbbreviated(levelInfo.totalXP)}
           </div>
         </div>
         <div className="text-center">
@@ -341,3 +335,4 @@ export default function ClanLevelDisplay({
     </div>
   );
 }
+

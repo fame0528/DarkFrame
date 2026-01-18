@@ -1,126 +1,110 @@
 /**
- * Clan Alliance Management API
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/alliance/route.ts
+ * @created 2025-10-18
+ * @updated 2025-01-23 (FID-20251023-001: Auth deduplication + JSDoc)
  * 
  * OVERVIEW:
  * API endpoints for creating, accepting, and breaking clan alliances.
  * Supports 4 alliance types: NAP (free), Trade (10K), Military (50K), Federation (200K).
  * 
- * Endpoints:
- * - POST: Propose alliance
- * - PUT: Accept alliance
- * - DELETE: Break alliance
- * - GET: View alliances
+ * ROUTES:
+ * - POST /api/clan/alliance - Propose alliance to another clan
+ * - PUT /api/clan/alliance - Accept alliance proposal
+ * - DELETE /api/clan/alliance - Break existing alliance
+ * - GET /api/clan/alliance - View clan's alliances
  * 
- * Security:
- * - JWT authentication required
- * - Leaders/Co-Leaders can propose/accept
- * - Only Leaders can break alliances
+ * AUTHENTICATION:
+ * - requireClanMembership() for all handlers
+ * - Permission checks in service layer (Leader/Co-Leader for propose/accept, Leader only for break)
  * 
- * @module app/api/clan/alliance/route
+ * BUSINESS RULES:
+ * - Alliance types: NAP (free), TRADE (10K metal+energy), MILITARY (50K), FEDERATION (200K)
+ * - Proposals require Leader or Co-Leader permissions
+ * - Acceptance requires matching permissions in target clan
+ * - Breaking alliances requires Leader permission only
+ * - 72-hour cooldown after breaking alliance before new proposal
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import { MongoClient, Db, ObjectId } from 'mongodb';
+import { ObjectId } from 'mongodb';
+import { getClientAndDatabase } from '@/lib/mongodb';
+import { requireClanMembership } from '@/lib/authMiddleware';
 import {
   proposeAlliance,
   acceptAlliance,
   breakAlliance,
   getAlliancesForClan,
-  initializeAllianceService,
   AllianceType,
 } from '@/lib/clanAllianceService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode,
+} from '@/lib';
+import {
+  ProposeAllianceSchema,
+  AcceptAllianceSchema,
+  BreakAllianceSchema,
+} from '@/lib/validation/schemas';
+import { ZodError } from 'zod';
 
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'your-secret-key');
-const MONGODB_URI = process.env.MONGODB_URI || '';
-const MONGODB_DB = process.env.MONGODB_DB || 'darkframe';
-
-let cachedClient: MongoClient | null = null;
-let cachedDb: Db | null = null;
-
-async function connectToDatabase() {
-  if (cachedClient && cachedDb) {
-    return { client: cachedClient, db: cachedDb };
-  }
-
-  const client = await MongoClient.connect(MONGODB_URI);
-  const db = client.db(MONGODB_DB);
-
-  cachedClient = client;
-  cachedDb = db;
-
-  initializeAllianceService(client, db);
-
-  return { client, db };
-}
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
+const postRateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
+const putRateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
+const deleteRateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * POST /api/clan/alliance
- * 
  * Propose alliance to another clan
  * 
- * Request Body:
- * {
- *   "targetClanId": "clan456",
- *   "allianceType": "NAP" | "TRADE" | "MILITARY" | "FEDERATION"
- * }
+ * @param request - NextRequest with auth cookie and body data
+ * @returns NextResponse with alliance proposal or error
  * 
- * Response:
- * {
- *   "success": true,
- *   "alliance": {
- *     "_id": "...",
- *     "clanIds": ["clan123", "clan456"],
- *     "type": "MILITARY",
- *     "status": "PROPOSED",
- *     "cost": { "metal": 50000, "energy": 50000 },
- *     "proposedAt": "..."
+ * @example
+ * POST /api/clan/alliance
+ * Body: { targetClanId: "676a1b2c3d4e5f6a7b8c9d0e", allianceType: "MILITARY" }
+ * Response: {
+ *   success: true,
+ *   alliance: {
+ *     _id: "...",
+ *     clanIds: ["clan123", "clan456"],
+ *     type: "MILITARY",
+ *     status: "PROPOSED",
+ *     cost: { metal: 50000, energy: 50000 },
+ *     proposedAt: "2025-01-23T10:30:00Z"
  *   }
  * }
+ * 
+ * @throws {400} Missing fields, invalid alliance type, or not in clan
+ * @throws {401} Not authenticated
+ * @throws {403} Insufficient permissions (not Leader/Co-Leader)
+ * @throws {500} Server error
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(postRateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('clan-alliance-post');
+  const endTimer = log.time('propose-alliance');
+
   try {
-    // Verify authentication
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
-    }
+    const { db } = await getClientAndDatabase();
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    
+    const { auth, clanId } = result;
 
-    const { payload } = await jwtVerify(token, JWT_SECRET);
-    const playerId = payload.sub as string;
-
-    // Parse request body
+    // Parse and validate request body with Zod
     const body = await request.json();
-    const { targetClanId, allianceType } = body;
+    const validatedData = ProposeAllianceSchema.parse(body);
+    const { targetClanId, allianceType } = validatedData;
 
-    if (!targetClanId || !allianceType) {
-      return NextResponse.json(
-        { error: 'targetClanId and allianceType are required' },
-        { status: 400 }
-      );
-    }
+    // Propose alliance (service handles permissions)
+    const alliance = await proposeAlliance(clanId, targetClanId, allianceType as AllianceType, auth.playerId);
 
-    // Validate alliance type
-    if (!Object.values(AllianceType).includes(allianceType)) {
-      return NextResponse.json({ error: 'Invalid alliance type' }, { status: 400 });
-    }
-
-    // Get player's clan
-    const { db } = await connectToDatabase();
-    const playersCollection = db.collection('players');
-    const player = await playersCollection.findOne({ _id: new ObjectId(playerId) });
-
-    if (!player || !player.clanId) {
-      return NextResponse.json({ error: 'Player is not in a clan' }, { status: 400 });
-    }
-
-    const proposingClanId = player.clanId;
-
-    // Propose alliance
-    const alliance = await proposeAlliance(proposingClanId, targetClanId, allianceType, playerId);
-
+    log.info('Alliance proposed', { allianceId: alliance._id?.toString(), targetClanId, type: allianceType });
     return NextResponse.json({
       success: true,
       alliance: {
@@ -134,60 +118,61 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error: any) {
-    console.error('Alliance proposal error:', error);
-    return NextResponse.json({ error: error.message || 'Failed to propose alliance' }, { status: 500 });
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Alliance proposal failed', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * PUT /api/clan/alliance
- * 
  * Accept alliance proposal
  * 
- * Request Body:
- * {
- *   "allianceId": "alliance123"
+ * @param request - NextRequest with auth cookie and body data
+ * @returns NextResponse with accepted alliance or error
+ * 
+ * @example
+ * PUT /api/clan/alliance
+ * Body: { allianceId: "alliance123" }
+ * Response: {
+ *   success: true,
+ *   alliance: {
+ *     _id: "alliance123",
+ *     status: "ACTIVE",
+ *     acceptedAt: "2025-01-23T11:00:00Z",
+ *     contracts: []
+ *   }
  * }
  * 
- * Response:
- * {
- *   "success": true,
- *   "alliance": { ... }
- * }
+ * @throws {400} Missing allianceId or not in clan
+ * @throws {401} Not authenticated
+ * @throws {403} Insufficient permissions or not target clan
+ * @throws {500} Server error
  */
-export async function PUT(request: NextRequest) {
+export const PUT = withRequestLogging(putRateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('clan-alliance-put');
+  const endTimer = log.time('accept-alliance');
+
   try {
-    // Verify authentication
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
-    }
+    const { db} = await getClientAndDatabase();
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    
+    const { auth, clanId } = result;
 
-    const { payload } = await jwtVerify(token, JWT_SECRET);
-    const playerId = payload.sub as string;
-
-    // Parse request body
+    // Parse and validate request body with Zod
     const body = await request.json();
-    const { allianceId } = body;
+    const validatedData = AcceptAllianceSchema.parse(body);
+    const { allianceId } = validatedData;
 
-    if (!allianceId) {
-      return NextResponse.json({ error: 'allianceId is required' }, { status: 400 });
-    }
+    // Accept alliance (service handles permissions and validation)
+    const alliance = await acceptAlliance(allianceId, clanId, auth.playerId);
 
-    // Get player's clan
-    const { db } = await connectToDatabase();
-    const playersCollection = db.collection('players');
-    const player = await playersCollection.findOne({ _id: new ObjectId(playerId) });
-
-    if (!player || !player.clanId) {
-      return NextResponse.json({ error: 'Player is not in a clan' }, { status: 400 });
-    }
-
-    const acceptingClanId = player.clanId;
-
-    // Accept alliance
-    const alliance = await acceptAlliance(allianceId, acceptingClanId, playerId);
-
+    log.info('Alliance accepted', { allianceId: alliance._id?.toString(), clanId });
     return NextResponse.json({
       success: true,
       alliance: {
@@ -202,60 +187,58 @@ export async function PUT(request: NextRequest) {
       },
     });
   } catch (error: any) {
-    console.error('Alliance acceptance error:', error);
-    return NextResponse.json({ error: error.message || 'Failed to accept alliance' }, { status: 500 });
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Alliance acceptance failed', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * DELETE /api/clan/alliance
+ * Break existing alliance
  * 
- * Break alliance
+ * @param request - NextRequest with auth cookie and body data
+ * @returns NextResponse with break confirmation or error
  * 
- * Request Body:
- * {
- *   "allianceId": "alliance123"
+ * @example
+ * DELETE /api/clan/alliance
+ * Body: { allianceId: "alliance123" }
+ * Response: {
+ *   success: true,
+ *   brokenAt: "2025-01-23T12:00:00Z",
+ *   cooldownHours: 72,
+ *   cooldownUntil: "2025-01-26T12:00:00Z"
  * }
  * 
- * Response:
- * {
- *   "success": true,
- *   "cooldownHours": 72
- * }
+ * @throws {400} Missing allianceId or not in clan
+ * @throws {401} Not authenticated
+ * @throws {403} Insufficient permissions (not Leader)
+ * @throws {500} Server error
  */
-export async function DELETE(request: NextRequest) {
+export const DELETE = withRequestLogging(deleteRateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('clan-alliance-delete');
+  const endTimer = log.time('break-alliance');
+
   try {
-    // Verify authentication
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
-    }
+    const { db } = await getClientAndDatabase();
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    
+    const { auth, clanId } = result;
 
-    const { payload } = await jwtVerify(token, JWT_SECRET);
-    const playerId = payload.sub as string;
-
-    // Parse request body
+    // Parse and validate request body with Zod
     const body = await request.json();
-    const { allianceId } = body;
+    const validatedData = BreakAllianceSchema.parse(body);
+    const { allianceId } = validatedData;
 
-    if (!allianceId) {
-      return NextResponse.json({ error: 'allianceId is required' }, { status: 400 });
-    }
+    // Break alliance (service handles Leader-only permission check)
+    const alliance = await breakAlliance(allianceId, clanId, auth.playerId);
 
-    // Get player's clan
-    const { db } = await connectToDatabase();
-    const playersCollection = db.collection('players');
-    const player = await playersCollection.findOne({ _id: new ObjectId(playerId) });
-
-    if (!player || !player.clanId) {
-      return NextResponse.json({ error: 'Player is not in a clan' }, { status: 400 });
-    }
-
-    const breakingClanId = player.clanId;
-
-    // Break alliance
-    const alliance = await breakAlliance(allianceId, breakingClanId, playerId);
-
+    log.info('Alliance broken', { allianceId, clanId });
     return NextResponse.json({
       success: true,
       brokenAt: alliance.brokenAt,
@@ -263,46 +246,55 @@ export async function DELETE(request: NextRequest) {
       cooldownUntil: alliance.cooldownUntil,
     });
   } catch (error: any) {
-    console.error('Alliance breaking error:', error);
-    return NextResponse.json({ error: error.message || 'Failed to break alliance' }, { status: 500 });
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Alliance breaking failed', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * GET /api/clan/alliance
- * 
  * View alliances for player's clan
  * 
- * Query Parameters:
- * - includeInactive (optional): Include broken/expired alliances
+ * @param request - NextRequest with auth cookie and optional query params
+ * @returns NextResponse with alliance list or error
  * 
- * Response:
- * {
- *   "success": true,
- *   "alliances": [...]
+ * @example
+ * GET /api/clan/alliance?includeInactive=true
+ * Response: {
+ *   success: true,
+ *   alliances: [
+ *     {
+ *       _id: "...",
+ *       clanIds: ["clan1", "clan2"],
+ *       type: "MILITARY",
+ *       status: "ACTIVE",
+ *       proposedAt: "...",
+ *       acceptedAt: "..."
+ *     }
+ *   ],
+ *   count: 3
  * }
+ * 
+ * @throws {400} Not in clan
+ * @throws {401} Not authenticated
+ * @throws {403} Not a clan member
+ * @throws {500} Server error
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('clan-alliance-get');
+  const endTimer = log.time('get-alliances');
+
   try {
-    // Verify authentication
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
-    }
-
-    const { payload } = await jwtVerify(token, JWT_SECRET);
-    const playerId = payload.sub as string;
-
-    // Get player's clan
-    const { db } = await connectToDatabase();
-    const playersCollection = db.collection('players');
-    const player = await playersCollection.findOne({ _id: new ObjectId(playerId) });
-
-    if (!player || !player.clanId) {
-      return NextResponse.json({ error: 'Player is not in a clan' }, { status: 400 });
-    }
-
-    const clanId = player.clanId;
+    const { db } = await getClientAndDatabase();
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    
+    const { clanId } = result;
 
     // Get query params
     const searchParams = request.nextUrl.searchParams;
@@ -311,6 +303,7 @@ export async function GET(request: NextRequest) {
     // Get alliances
     const alliances = await getAlliancesForClan(clanId, includeInactive);
 
+    log.info('Alliances retrieved', { clanId, count: alliances.length, includeInactive });
     return NextResponse.json({
       success: true,
       alliances: alliances.map((a) => ({
@@ -330,7 +323,10 @@ export async function GET(request: NextRequest) {
       count: alliances.length,
     });
   } catch (error: any) {
-    console.error('Get alliances error:', error);
-    return NextResponse.json({ error: error.message || 'Failed to get alliances' }, { status: 500 });
+    log.error('Get alliances failed', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
+

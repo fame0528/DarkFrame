@@ -9,11 +9,22 @@
  * buyout availability, and seller. Implements pagination for large result sets.
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getAuctions } from '@/lib/auctionService';
 import { AuctionSearchFilters, AuctionItemType, ResourceType } from '@/types/auction.types';
 import { UnitType } from '@/types';
 import { logger } from '@/lib/logger';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET /api/auction/list
@@ -48,7 +59,10 @@ import { logger } from '@/lib/logger';
  * - 400: Invalid filter parameters
  * - 500: Server error
  */
-export async function GET(request: Request) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('auction-list');
+  const endTimer = log.time('auction-list');
+  
   try {
     // Parse query parameters
     const url = new URL(request.url);
@@ -178,17 +192,12 @@ export async function GET(request: Request) {
     });
 
   } catch (error) {
-    logger.error('Error in list auctions API', error instanceof Error ? error : new Error(String(error)));
-    return NextResponse.json(
-      {
-        success: false,
-        message: 'Failed to fetch auctions',
-        error: 'SERVER_ERROR'
-      },
-      { status: 500 }
-    );
+    log.error('Failed to fetch auctions', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

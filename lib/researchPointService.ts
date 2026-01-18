@@ -167,7 +167,7 @@ export async function awardRP(
     }
 
     // Calculate VIP bonus
-    const isVIP = !!(player.isVIP && player.vipExpiresAt && new Date(player.vipExpiresAt) > new Date());
+    const isVIP = !!(player.vip && player.vipExpiration && new Date(player.vipExpiration) > new Date());
     const finalAmount = isVIP ? Math.floor(amount * VIP_RP_MULTIPLIER) : amount;
 
     // Calculate new balance
@@ -795,7 +795,7 @@ export async function getRPTransactionHistory(
  * 1. VIP Bonus Calculation:
  *    - Applied automatically in awardRP() function
  *    - +50% multiplier on all RP sources
- *    - Checked via player.isVIP && player.vipExpiresAt > now
+ *    - Checked via player.vip && player.vipExpiration > now
  * 
  * 2. Daily Harvest Milestones:
  *    - 6 thresholds: 1k, 2.5k, 5k, 10k, 15k, 22.5k harvests

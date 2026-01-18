@@ -19,7 +19,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { connectToDatabase, getAuthenticatedPlayer } from '@/lib/wmd/apiHelpers';
+import { connectToDatabase } from '@/lib/mongodb';
+import { getAuthenticatedPlayer } from '@/lib/wmd/apiHelpers';
 import {
   getPlayerResearch,
   canStartResearch,
@@ -38,7 +39,7 @@ import { ALL_RESEARCH_TECHS, ResearchCategory } from '@/types/wmd';
  */
 export async function GET(req: NextRequest) {
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
@@ -102,7 +103,7 @@ export async function GET(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
@@ -175,3 +176,4 @@ export async function POST(req: NextRequest) {
     );
   }
 }
+

@@ -12,6 +12,12 @@ import { NextResponse } from 'next/server';
 import { verifyAuth } from '@/lib/authMiddleware';
 import { getCollection } from '@/lib/mongodb';
 import { Player, Tile, TerrainType, ShrineBoostTier, ItemType, ItemRarity } from '@/types';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS
+} from '@/lib';
 
 const MAX_BOOST_DURATION = 8 * 60 * 60 * 1000; // 8 hours in milliseconds
 
@@ -25,6 +31,9 @@ const ITEM_VALUES = {
   [ItemRarity.Epic]: 60 * 60 * 1000, // 1 hour
   [ItemRarity.Legendary]: 2 * 60 * 60 * 1000 // 2 hours
 };
+
+const logger = createRouteLogger('shrine/extend');
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.SHRINE_SACRIFICE);
 
 /**
  * POST /api/shrine/extend
@@ -51,7 +60,7 @@ const ITEM_VALUES = {
  * }
  * ```
  */
-export async function POST(request: Request) {
+export const POST = withRequestLogging(rateLimiter(async (request: Request) => {
   try {
     // Verify authentication
     const authResult = await verifyAuth();
@@ -221,4 +230,4 @@ export async function POST(request: Request) {
       { status: 500 }
     );
   }
-}
+}));

@@ -2,6 +2,7 @@
  * @fileoverview Admin Bot Configuration API - View and update bot configs
  * @module app/api/admin/bot-config/route
  * @created 2025-10-18
+ * @updated 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * 
  * OVERVIEW:
  * Admin-only endpoint for viewing and modifying bot configurations.
@@ -11,6 +12,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authMiddleware';
 import clientPromise from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createValidationErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+import { BotConfigPatchSchema } from '@/lib/validation/schemas';
+import { ZodError } from 'zod';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 // ============================================================================
 // GET - View Bot Configuration
@@ -18,26 +33,28 @@ import clientPromise from '@/lib/mongodb';
 
 /**
  * GET /api/admin/bot-config?username=BotName
+ * Rate Limited: 500 req/min (admin dashboard)
  * Returns detailed configuration for a specific bot
  * Requires admin privileges (rank >= 5)
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminBotConfigGetAPI');
+  const endTimer = log.time('get-bot-config');
+
   try {
     // Authenticate user
     const tokenPayload = await getAuthenticatedUser();
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     // Check admin privileges
     if (tokenPayload.isAdmin !== true) {
-      return NextResponse.json(
-        { error: 'Admin privileges required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin privileges required',
+      });
     }
 
     const client = await clientPromise;
@@ -48,10 +65,9 @@ export async function GET(request: NextRequest) {
     const botUsername = searchParams.get('username');
 
     if (!botUsername) {
-      return NextResponse.json(
-        { error: 'Bot username is required' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, {
+        message: 'Bot username is required',
+      });
     }
 
     // Fetch bot
@@ -61,13 +77,20 @@ export async function GET(request: NextRequest) {
     });
 
     if (!bot) {
-      return NextResponse.json(
-        { error: 'Bot not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_BOT_NOT_FOUND, {
+        message: 'Bot not found',
+        username: botUsername,
+      });
     }
 
     // Return bot configuration
+    log.info('Bot configuration retrieved', {
+      botUsername,
+      tier: bot.botConfig?.tier,
+      specialization: bot.botConfig?.specialization,
+      adminUser: tokenPayload.username,
+    });
+
     return NextResponse.json({
       success: true,
       data: {
@@ -85,16 +108,12 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('Bot config fetch error:', error);
-    return NextResponse.json(
-      {
-        error: 'Failed to fetch bot configuration',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      },
-      { status: 500 }
-    );
+    log.error('Failed to fetch bot configuration', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================================
 // PATCH - Update Bot Configuration
@@ -102,6 +121,7 @@ export async function GET(request: NextRequest) {
 
 /**
  * PATCH /api/admin/bot-config
+ * Rate Limited: 30 req/hour (admin bot management)
  * Updates bot configuration settings
  * Requires admin privileges (rank >= 5)
  * 
@@ -117,37 +137,34 @@ export async function GET(request: NextRequest) {
  *   }
  * }
  */
-export async function PATCH(request: NextRequest) {
+const patchRateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.adminBot);
+
+export const PATCH = withRequestLogging(patchRateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminBotConfigPatchAPI');
+  const endTimer = log.time('patch-bot-config');
+
   try {
     // Authenticate user
     const tokenPayload = await getAuthenticatedUser();
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     // Check admin privileges
     if (tokenPayload.isAdmin !== true) {
-      return NextResponse.json(
-        { error: 'Admin privileges required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin privileges required',
+      });
     }
 
     // Parse request body
     const body = await request.json();
+    const validated = BotConfigPatchSchema.parse(body);
     const client = await clientPromise;
     const db = client.db('game');
-    const { username, updates } = body;
-
-    if (!username) {
-      return NextResponse.json(
-        { error: 'Bot username is required' },
-        { status: 400 }
-      );
-    }
+    const { username, updates } = validated;
 
     // Verify bot exists
     const bot = await db.collection('players').findOne({
@@ -156,50 +173,24 @@ export async function PATCH(request: NextRequest) {
     });
 
     if (!bot) {
-      return NextResponse.json(
-        { error: 'Bot not found' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_BOT_NOT_FOUND, {
+        message: 'Bot not found',
+        username,
+      });
     }
 
-    // Build update document
+    // Build update document (validation already done by schema)
     const updateDoc: Record<string, unknown> = {};
 
     if (updates.specialization) {
-      const validSpecs = ['Hoarder', 'Fortress', 'Raider', 'Balanced', 'Ghost'];
-      if (!validSpecs.includes(updates.specialization)) {
-        return NextResponse.json(
-          { error: `Invalid specialization. Must be one of: ${validSpecs.join(', ')}` },
-          { status: 400 }
-        );
-      }
       updateDoc['botConfig.specialization'] = updates.specialization;
     }
 
     if (updates.tier !== undefined) {
-      if (updates.tier < 1 || updates.tier > 6) {
-        return NextResponse.json(
-          { error: 'Tier must be between 1 and 6' },
-          { status: 400 }
-        );
-      }
       updateDoc['botConfig.tier'] = updates.tier;
     }
 
     if (updates.position) {
-      if (
-        typeof updates.position.x !== 'number' ||
-        typeof updates.position.y !== 'number' ||
-        updates.position.x < 0 ||
-        updates.position.x > 5000 ||
-        updates.position.y < 0 ||
-        updates.position.y > 5000
-      ) {
-        return NextResponse.json(
-          { error: 'Invalid position. Must be within map bounds (0-5000)' },
-          { status: 400 }
-        );
-      }
       updateDoc['currentPosition'] = updates.position;
     }
 
@@ -224,22 +215,27 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
+    log.info('Bot configuration updated successfully', {
+      username,
+      updatesApplied: Object.keys(updateDoc),
+      adminUser: tokenPayload.username,
+    });
+
     return NextResponse.json({
       success: true,
       message: 'Bot configuration updated successfully',
       updates: updateDoc,
     });
   } catch (error) {
-    console.error('Bot config update error:', error);
-    return NextResponse.json(
-      {
-        error: 'Failed to update bot configuration',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    log.error('Failed to update bot configuration', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================================
 // IMPLEMENTATION NOTES

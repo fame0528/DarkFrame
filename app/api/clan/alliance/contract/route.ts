@@ -1,120 +1,84 @@
 /**
- * Alliance Contract Management API
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/alliance/contract/route.ts
+ * @created 2025-10-18
+ * @updated 2025-01-23 (FID-20251023-001: Auth deduplication + JSDoc)
  * 
  * OVERVIEW:
- * API endpoints for managing alliance contracts.
+ * API endpoints for managing alliance contracts between clans.
  * Supports 4 contract types: Resource Sharing, Defense Pact, War Support, Joint Research.
  * 
- * Endpoints:
- * - POST: Add contract to alliance
- * - DELETE: Remove contract from alliance
+ * ROUTES:
+ * - POST /api/clan/alliance/contract - Add contract to alliance
+ * - DELETE /api/clan/alliance/contract - Remove contract from alliance
  * 
- * Security:
- * - JWT authentication required
+ * AUTHENTICATION:
+ * - requireClanMembership() for both handlers
+ * - Permission check in service layer (Leader only)
+ * 
+ * BUSINESS RULES:
  * - Only Leaders can manage contracts
  * - Contract type must be allowed for alliance type
- * 
- * @module app/api/clan/alliance/contract/route
+ * - Contract terms validated based on contract type
+ * - Resource Sharing: 5-50% share percentage
+ * - Defense Pact: auto-join defense flag
+ * - War Support: metal/energy support amounts
+ * - Joint Research: 5-30% RP share percentage
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import { MongoClient, Db, ObjectId } from 'mongodb';
+import { ObjectId } from 'mongodb';
+import { getClientAndDatabase } from '@/lib/mongodb';
+import { requireClanMembership } from '@/lib/authMiddleware';
 import {
   addContract,
   removeContract,
-  initializeAllianceService,
   ContractType,
 } from '@/lib/clanAllianceService';
-import type { AllianceContract } from '@/lib/clanAllianceService';
-
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'your-secret-key');
-const MONGODB_URI = process.env.MONGODB_URI || '';
-const MONGODB_DB = process.env.MONGODB_DB || 'darkframe';
-
-let cachedClient: MongoClient | null = null;
-let cachedDb: Db | null = null;
-
-async function connectToDatabase() {
-  if (cachedClient && cachedDb) {
-    return { client: cachedClient, db: cachedDb };
-  }
-
-  const client = await MongoClient.connect(MONGODB_URI);
-  const db = client.db(MONGODB_DB);
-
-  cachedClient = client;
-  cachedDb = db;
-
-  initializeAllianceService(client, db);
-
-  return { client, db };
-}
 
 /**
  * POST /api/clan/alliance/contract
- * 
  * Add contract to alliance
  * 
- * Request Body (Resource Sharing):
- * {
- *   "allianceId": "alliance123",
- *   "contractType": "RESOURCE_SHARING",
- *   "terms": {
- *     "resourceSharePercentage": 25
+ * @param request - NextRequest with auth cookie and body data
+ * @returns NextResponse with updated alliance or error
+ * 
+ * @example
+ * POST /api/clan/alliance/contract
+ * Body: {
+ *   allianceId: "alliance123",
+ *   contractType: "RESOURCE_SHARING",
+ *   terms: { resourceSharePercentage: 25 }
+ * }
+ * Response: {
+ *   success: true,
+ *   alliance: {
+ *     _id: "alliance123",
+ *     contracts: [{ type: "RESOURCE_SHARING", terms: {...} }]
  *   }
  * }
  * 
- * Request Body (Defense Pact):
- * {
- *   "allianceId": "alliance123",
- *   "contractType": "DEFENSE_PACT",
- *   "terms": {
- *     "autoJoinDefense": true
- *   }
+ * @example
+ * POST /api/clan/alliance/contract
+ * Body: {
+ *   allianceId: "alliance123",
+ *   contractType: "DEFENSE_PACT",
+ *   terms: { autoJoinDefense: true }
  * }
  * 
- * Request Body (War Support):
- * {
- *   "allianceId": "alliance123",
- *   "contractType": "WAR_SUPPORT",
- *   "terms": {
- *     "supportAmount": {
- *       "metal": 10000,
- *       "energy": 10000
- *     }
- *   }
- * }
- * 
- * Request Body (Joint Research):
- * {
- *   "allianceId": "alliance123",
- *   "contractType": "JOINT_RESEARCH",
- *   "terms": {
- *     "researchSharePercentage": 15
- *   }
- * }
- * 
- * Response:
- * {
- *   "success": true,
- *   "alliance": { ... }
- * }
+ * @throws {400} Missing fields, invalid contract type, or not in clan
+ * @throws {401} Not authenticated
+ * @throws {403} Insufficient permissions (not Leader)
+ * @throws {500} Server error
  */
 export async function POST(request: NextRequest) {
   try {
-    // Verify authentication
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
-    }
+    const { db } = await getClientAndDatabase();
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    
+    const { auth, clanId } = result;
 
-    const { payload } = await jwtVerify(token, JWT_SECRET);
-    const playerId = payload.sub as string;
-
-    // Parse request body
+    // Parse and validate request body
     const body = await request.json();
     const { allianceId, contractType, terms } = body;
 
@@ -125,24 +89,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate contract type
     if (!Object.values(ContractType).includes(contractType)) {
       return NextResponse.json({ error: 'Invalid contract type' }, { status: 400 });
     }
 
-    // Get player's clan
-    const { db } = await connectToDatabase();
-    const playersCollection = db.collection('players');
-    const player = await playersCollection.findOne({ _id: new ObjectId(playerId) });
-
-    if (!player || !player.clanId) {
-      return NextResponse.json({ error: 'Player is not in a clan' }, { status: 400 });
-    }
-
-    const clanId = player.clanId;
-
-    // Add contract
-    const alliance = await addContract(allianceId, clanId, playerId, contractType, terms);
+    // Add contract (service handles Leader permission check)
+    const alliance = await addContract(allianceId, clanId, auth.playerId, contractType, terms);
 
     return NextResponse.json({
       success: true,
@@ -161,33 +113,37 @@ export async function POST(request: NextRequest) {
 
 /**
  * DELETE /api/clan/alliance/contract
- * 
  * Remove contract from alliance
  * 
- * Request Body:
- * {
- *   "allianceId": "alliance123",
- *   "contractType": "DEFENSE_PACT"
+ * @param request - NextRequest with auth cookie and body data
+ * @returns NextResponse with updated alliance or error
+ * 
+ * @example
+ * DELETE /api/clan/alliance/contract
+ * Body: { allianceId: "alliance123", contractType: "DEFENSE_PACT" }
+ * Response: {
+ *   success: true,
+ *   alliance: {
+ *     _id: "alliance123",
+ *     contracts: []
+ *   }
  * }
  * 
- * Response:
- * {
- *   "success": true,
- *   "alliance": { ... }
- * }
+ * @throws {400} Missing allianceId/contractType or not in clan
+ * @throws {401} Not authenticated
+ * @throws {403} Insufficient permissions (not Leader)
+ * @throws {404} Contract not found
+ * @throws {500} Server error
  */
 export async function DELETE(request: NextRequest) {
   try {
-    // Verify authentication
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
-    }
+    const { db } = await getClientAndDatabase();
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    
+    const { auth, clanId } = result;
 
-    const { payload } = await jwtVerify(token, JWT_SECRET);
-    const playerId = payload.sub as string;
-
-    // Parse request body
+    // Parse and validate request body
     const body = await request.json();
     const { allianceId, contractType } = body;
 
@@ -198,19 +154,8 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // Get player's clan
-    const { db } = await connectToDatabase();
-    const playersCollection = db.collection('players');
-    const player = await playersCollection.findOne({ _id: new ObjectId(playerId) });
-
-    if (!player || !player.clanId) {
-      return NextResponse.json({ error: 'Player is not in a clan' }, { status: 400 });
-    }
-
-    const clanId = player.clanId;
-
-    // Remove contract
-    const alliance = await removeContract(allianceId, clanId, playerId, contractType);
+    // Remove contract (service handles Leader permission check)
+    const alliance = await removeContract(allianceId, clanId, auth.playerId, contractType);
 
     return NextResponse.json({
       success: true,
@@ -226,3 +171,4 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: error.message || 'Failed to remove contract' }, { status: 500 });
   }
 }
+

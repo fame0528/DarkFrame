@@ -7,17 +7,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
 import { getAuthenticatedUser } from '@/lib/authService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 /**
  * GET /api/admin/rp-economy/milestone-stats
  * Returns daily harvest milestone completion statistics
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/rp-economy/milestone-stats');
+  const endTimer = log.time('get-milestone-stats');
+
   try {
     // Verify admin authentication
     const adminUser = await getAuthenticatedUser();
     if (!adminUser?.isAdmin) {
-      return NextResponse.json({ error: 'Admin access required' }, { status: 403 });
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED);
     }
 
     // Query milestone completions from RPTransaction collection
@@ -59,10 +73,14 @@ export async function GET(request: NextRequest) {
       })
     );
 
+    log.info('Milestone stats retrieved', { milestoneCount: milestones.length });
+
     return NextResponse.json({ milestones });
 
   } catch (error) {
-    console.error('Error fetching milestone stats:', error);
-    return NextResponse.json({ error: 'Failed to fetch milestone stats' }, { status: 500 });
+    log.error('Failed to fetch milestone stats', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

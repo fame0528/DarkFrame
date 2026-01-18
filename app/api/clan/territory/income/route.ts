@@ -1,90 +1,67 @@
 /**
- * Territory Income API Route
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/territory/income/route.ts
+ * @created 2025-10-18
+ * @updated 2025-01-23 (FID-20251023-001: Auth deduplication + JSDoc)
  * 
  * OVERVIEW:
  * API endpoint for viewing and managing territory passive income.
- * GET: View projected daily income
- * POST: Manual income collection (testing/admin only)
+ * GET: View projected daily income from territories
+ * POST: Manual income collection (admin/testing only)
  * 
- * Features:
- * - Income projection calculator
- * - Manual collection trigger
- * - Collection history
- * - Next collection time
+ * ROUTES:
+ * - GET /api/clan/territory/income - View income projection
+ * - POST /api/clan/territory/income - Manual collection trigger (admin only)
  * 
- * Authentication:
- * - GET: Any authenticated clan member
- * - POST: Admin only (for testing)
+ * AUTHENTICATION:
+ * - GET: requireClanMembership() - Any clan member can view
+ * - POST: requireAdmin() - Admin password required for manual collection
  * 
- * @module app/api/clan/territory/income
+ * BUSINESS RULES:
+ * - Income calculated per territory (base rate × clan level modifier)
+ * - Daily collection schedule (automatic)
+ * - Manual collection requires admin authorization
+ * - Collection history tracked per clan
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import { MongoClient } from 'mongodb';
+import { getClientAndDatabase } from '@/lib/mongodb';
+import { requireClanMembership, requireAdmin } from '@/lib/authMiddleware';
 import {
   initializeTerritoryService,
   getProjectedTerritoryIncome,
   collectDailyTerritoryIncome,
 } from '@/lib/territoryService';
 
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'your-secret-key');
-const MONGODB_URI = process.env.MONGODB_URI || '';
-
-let client: MongoClient | null = null;
-
-/**
- * Get MongoDB client (singleton pattern)
- */
-async function getMongoClient(): Promise<MongoClient> {
-  if (!client) {
-    client = new MongoClient(MONGODB_URI);
-    await client.connect();
-    const db = client.db('darkframe');
-    initializeTerritoryService(client, db);
-  }
-  return client;
-}
-
 /**
  * GET /api/clan/territory/income
  * View projected daily income from territories
  * 
- * Query params:
- * - clanId (required): Clan ID
+ * @param request - NextRequest with auth cookie and query params
+ * @returns NextResponse with income projection or error
  * 
- * Returns:
- * - metalPerDay: Daily metal income
- * - energyPerDay: Daily energy income
- * - perTerritory: Income per territory
- * - territoryCount: Number of territories
- * - clanLevel: Current clan level
- * - nextCollection: Next collection timestamp
- * - canCollectNow: Whether collection is available
+ * @example
+ * GET /api/clan/territory/income?clanId=676a1b2c3d4e5f6a7b8c9d0e
+ * Response: {
+ *   success: true,
+ *   metalPerDay: 15000,
+ *   energyPerDay: 15000,
+ *   perTerritory: { metal: 500, energy: 500 },
+ *   territoryCount: 30,
+ *   clanLevel: 12,
+ *   nextCollection: "2025-01-24T00:00:00Z",
+ *   canCollectNow: false
+ * }
+ * 
+ * @throws {400} Missing clanId
+ * @throws {401} Not authenticated
+ * @throws {403} Not a clan member
+ * @throws {500} Server error
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
-    // Get auth token
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
-    }
-
-    // Verify JWT
-    const { payload } = await jwtVerify(token, JWT_SECRET);
-    const playerId = payload.playerId as string;
-
-    if (!playerId) {
-      return NextResponse.json(
-        { error: 'Invalid token' },
-        { status: 401 }
-      );
-    }
+    const { client, db } = await getClientAndDatabase();
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
 
     // Get clanId from query
     const { searchParams } = new URL(request.url);
@@ -97,8 +74,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // Get MongoDB client
-    await getMongoClient();
+    // Initialize territory service
+    initializeTerritoryService(client, db);
 
     // Get projected income
     const projection = await getProjectedTerritoryIncome(clanId);
@@ -121,39 +98,31 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
  * POST /api/clan/territory/income
  * Manually trigger income collection (admin/testing only)
  * 
- * Body:
- * - clanId (required): Clan ID to collect for
- * - adminPassword (required): Admin password for authorization
+ * @param request - NextRequest with auth cookie and body data
+ * @returns NextResponse with collection result or error
  * 
- * Returns:
- * - success: Whether collection succeeded
- * - metalCollected: Amount of metal collected
- * - energyCollected: Amount of energy collected
- * - territoryCount: Number of territories
- * - timestamp: Collection timestamp
- * - message: Status message
+ * @example
+ * POST /api/clan/territory/income
+ * Body: { clanId: "676a1b2c3d4e5f6a7b8c9d0e", adminPassword: "..." }
+ * Response: {
+ *   success: true,
+ *   metalCollected: 15000,
+ *   energyCollected: 15000,
+ *   territoryCount: 30,
+ *   timestamp: "2025-01-23T10:30:00Z",
+ *   message: "Collected 15000 metal and 15000 energy"
+ * }
+ * 
+ * @throws {400} Missing clanId
+ * @throws {401} Not authenticated
+ * @throws {403} Not admin or invalid admin password
+ * @throws {500} Server error
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    // Get auth token
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
-    }
-
-    // Verify JWT
-    const { payload } = await jwtVerify(token, JWT_SECRET);
-    const playerId = payload.playerId as string;
-
-    if (!playerId) {
-      return NextResponse.json(
-        { error: 'Invalid token' },
-        { status: 401 }
-      );
-    }
+    const { client, db } = await getClientAndDatabase();
+    const authResult = await requireAdmin(request, db);
+    if (authResult instanceof NextResponse) return authResult;
 
     // Parse request body
     const body = await request.json();
@@ -166,7 +135,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // Verify admin password (basic security for testing)
+    // Verify admin password (additional security for testing)
     const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
     if (adminPassword !== ADMIN_PASSWORD) {
       return NextResponse.json(
@@ -175,13 +144,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // Get MongoDB client
-    await getMongoClient();
+    // Initialize territory service
+    initializeTerritoryService(client, db);
 
     // Collect income
-    const result = await collectDailyTerritoryIncome(clanId);
+    const collectionResult = await collectDailyTerritoryIncome(clanId);
 
-    return NextResponse.json(result);
+    return NextResponse.json(collectionResult);
 
   } catch (error: any) {
     console.error('Error collecting territory income:', error);

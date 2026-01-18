@@ -1,87 +1,83 @@
 /**
- * Clan Perks Available API Route
- * 
- * Created: 2025-10-18
+ * @file app/api/clan/perks/available/route.ts
+ * @created 2025-10-18
+ * @updated 2025-01-23 (FID-20251023-001: Auth deduplication + JSDoc)
  * 
  * OVERVIEW:
  * GET endpoint to retrieve all available perks for a clan based on level.
  * Shows unlocked perks (can activate), locked perks (need higher level),
  * currently active perks, and perk recommendations based on clan stats.
  * 
- * Authentication:
- * - Requires clan membership (any role can view)
+ * ROUTES:
+ * - GET /api/clan/perks/available - Retrieve perk catalog with filters
  * 
- * Integration:
- * - clanPerkService for perk catalog and filtering
- * - clanService to verify membership
+ * AUTHENTICATION:
+ * - requireClanMembership() - Any clan member can view perks
+ * 
+ * BUSINESS RULES:
+ * - Unlocked perks: Can be activated if sufficient resources
+ * - Locked perks: Show required level and cost (informational)
+ * - Active perks: Currently providing bonuses to clan members
+ * - Maximum 4 active perks allowed (4 slots)
+ * - Filters: category (COMBAT/ECONOMIC/SOCIAL/STRATEGIC), tier (BRONZE/SILVER/GOLD/LEGENDARY)
+ * - Optional recommendations based on clan stats and resource levels
+ * - Optional tier cost breakdowns showing total cost per tier
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import clientPromise from '@/lib/mongodb';
+import { getClientAndDatabase } from '@/lib/mongodb';
+import { requireClanMembership } from '@/lib/authMiddleware';
 import {
   initializeClanPerkService,
   getAvailablePerks,
   getActivePerks,
-  getPerksByCategory,
-  getPerksByTier,
   calculateTierCost,
   getRecommendedPerks,
 } from '@/lib/clanPerkService';
-import { initializeClanService, getClanByPlayerId } from '@/lib/clanService';
 import { ClanPerkCategory, ClanPerkTier } from '@/types/clan.types';
-
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'your-secret-key');
 
 /**
  * GET /api/clan/perks/available
- * 
  * Retrieve all available perks for authenticated player's clan
  * 
- * Query Parameters:
- * - category: Filter by category (COMBAT, ECONOMIC, SOCIAL, STRATEGIC) - optional
- * - tier: Filter by tier (BRONZE, SILVER, GOLD, LEGENDARY) - optional
- * - recommendations: 'true' to include AI recommendations - optional
- * - costs: 'true' to include tier cost breakdowns - optional
+ * @param request - NextRequest with auth cookie and optional query parameters
+ * @returns NextResponse with perk catalog or error
  * 
- * Response:
- * - 200: Perk catalog with availability
- * - 401: Not authenticated
- * - 400: Not in clan
- * - 500: Server error
+ * @example
+ * GET /api/clan/perks/available
+ * Response: {
+ *   success: true,
+ *   perks: {
+ *     unlocked: [...],
+ *     locked: [...],
+ *     active: [...],
+ *     slotsRemaining: 2
+ *   }
+ * }
+ * 
+ * @example
+ * GET /api/clan/perks/available?category=COMBAT&recommendations=true
+ * Response: {
+ *   success: true,
+ *   perks: { unlocked: [...combat perks...], ... },
+ *   recommendations: [{ perk: {...}, reason: "...", priority: "high" }]
+ * }
+ * 
+ * @throws {400} Invalid category or tier filter
+ * @throws {401} Not authenticated
+ * @throws {403} Not a clan member
+ * @throws {500} Database or service error
  */
 export async function GET(request: NextRequest) {
   try {
-    // Verify authentication
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
-    }
+    const { client, db } = await getClientAndDatabase();
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    
+    const { clan, clanId } = result;
 
-    const verified = await jwtVerify(token, JWT_SECRET);
-    const username = verified.payload.username as string;
-
-    // Connect to database
-    const client = await clientPromise;
-    const db = client.db('darkframe');
-
-    // Initialize services
-    initializeClanService(client, db);
+    // Initialize perk service
     initializeClanPerkService(client, db);
-
-    // Get player's clan
-    const playersCollection = db.collection('players');
-    const player = await playersCollection.findOne({ username });
-    if (!player) {
-      return NextResponse.json({ error: 'Player not found' }, { status: 404 });
-    }
-
-    const clan = await getClanByPlayerId(player._id.toString());
-    if (!clan) {
-      return NextResponse.json({ error: 'Not a member of any clan' }, { status: 400 });
-    }
-
-    const clanId = clan._id!.toString();
 
     // Get query parameters
     const { searchParams } = new URL(request.url);

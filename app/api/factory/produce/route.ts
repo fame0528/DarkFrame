@@ -6,6 +6,20 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { produceUnit } from '@/lib/factoryService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  FactoryProduceSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.factoryBuild);
 
 /**
  * POST /api/factory/produce
@@ -16,32 +30,51 @@ import { produceUnit } from '@/lib/factoryService';
  * @body {number} y - Factory Y coordinate
  * @returns {Object} success: boolean, message: string, unit?: Unit
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('FactoryProduceAPI');
+  const endTimer = log.time('produceUnit');
+  
   try {
-    const { username, x, y } = await request.json();
+    const body = await request.json();
+    const validated = FactoryProduceSchema.parse(body);
 
-    // Validate required fields
-    if (!username || x === undefined || y === undefined) {
-      return NextResponse.json(
-        { success: false, message: 'Missing required fields: username, x, y' },
-        { status: 400 }
-      );
-    }
-
-    console.log(`🏭 ${username} producing unit at factory (${x}, ${y})`);
+    log.debug('Factory produce request', { 
+      username: validated.username, 
+      x: validated.x, 
+      y: validated.y 
+    });
 
     // Produce unit
-    const result = await produceUnit(username, x, y);
+    const result = await produceUnit(validated.username, validated.x, validated.y);
+    
+    if (!result.success) {
+      log.warn('Factory production failed', { 
+        username: validated.username, 
+        reason: result.message 
+      });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, { 
+        message: result.message 
+      });
+    }
+
+    log.info('Unit produced successfully', { 
+      username: validated.username, 
+      factoryLocation: `(${validated.x}, ${validated.y})` 
+    });
     
     return NextResponse.json(result);
   } catch (error) {
-    console.error('❌ Error producing unit:', error);
-    return NextResponse.json(
-      { success: false, message: 'Internal server error' },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      log.warn('Factory produce validation failed', { issues: error.issues });
+      return createValidationErrorResponse(error);
+    }
+
+    log.error('Error producing unit', error as Error);
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // END OF FILE

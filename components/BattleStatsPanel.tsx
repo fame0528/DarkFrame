@@ -6,7 +6,7 @@
  * OVERVIEW: Shows wins, losses, draws, win rate, and recent battles. Integrates with useBattleStats hook and StatsPanel.
  */
 import React from 'react';
-import type { BattleRecord } from '../lib/battleTrackingService';
+import type { BattleRecord } from '@/lib';
 import { useBattleStats } from '@/hooks/useBattleStats';
 
 export const BattleStatsPanel: React.FC<{ username: string }> = ({ username }) => {

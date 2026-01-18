@@ -24,18 +24,25 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { connectToDatabase, getAuthenticatedPlayer } from '@/lib/wmd/apiHelpers';
+import { connectToDatabase } from '@/lib/mongodb';
+import { verifyAuth } from '@/lib/authMiddleware';
+import { ObjectId } from 'mongodb';
 
 export async function GET(req: NextRequest) {
   try {
-    const { db } = await connectToDatabase();
-    const auth = await getAuthenticatedPlayer(req, db);
-
-    if (!auth) {
+    // Verify authentication using the same method as other APIs
+    const authResult = await verifyAuth();
+    if (!authResult || !authResult.username) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const playerId = auth.playerId;
+    const db = await connectToDatabase();
+    const player = await db.collection('players').findOne({ username: authResult.username });
+    if (!player) {
+      return NextResponse.json({ error: 'Player not found' }, { status: 404 });
+    }
+
+    const playerId = player._id.toString();
 
     // Query all collections in parallel for performance
     const [research, missiles, batteries, spies, votes, notifications] = await Promise.all([
@@ -43,8 +50,8 @@ export async function GET(req: NextRequest) {
       db.collection('wmd_missiles').find({ ownerId: playerId }).toArray(),
       db.collection('wmd_batteries').find({ playerId }).toArray(),
       db.collection('wmd_spies').find({ playerId }).toArray(),
-      auth.player?.clanId 
-        ? db.collection('wmd_votes').find({ clanId: auth.player.clanId, status: 'ACTIVE' }).toArray()
+      player?.clanId 
+        ? db.collection('wmd_votes').find({ clanId: player.clanId, status: 'ACTIVE' }).toArray()
         : Promise.resolve([]),
       db.collection('wmd_notifications').find({ playerId, status: 'UNREAD' }).limit(10).toArray(),
     ]);
@@ -80,4 +87,5 @@ export async function GET(req: NextRequest) {
     );
   }
 }
+
 

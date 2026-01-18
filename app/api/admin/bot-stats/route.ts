@@ -2,6 +2,7 @@
  * @fileoverview Admin Bot Statistics API - Bot population analytics
  * @module app/api/admin/bot-stats/route
  * @created 2025-10-18
+ * @updated 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * 
  * OVERVIEW:
  * Admin-only endpoint for viewing comprehensive bot population statistics.
@@ -11,6 +12,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authMiddleware';
 import clientPromise from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 // ============================================================================
 // GET - Bot Population Statistics
@@ -18,26 +30,28 @@ import clientPromise from '@/lib/mongodb';
 
 /**
  * GET /api/admin/bot-stats
+ * Rate Limited: 500 req/min (admin dashboard)
  * Returns comprehensive bot population analytics
  * Requires admin privileges (rank >= 5)
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminBotStatsAPI');
+  const endTimer = log.time('bot-stats');
+
   try {
     // Authenticate user
     const tokenPayload = await getAuthenticatedUser();
     if (!tokenPayload) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     // Check admin privileges
     if (tokenPayload.isAdmin !== true) {
-      return NextResponse.json(
-        { error: 'Admin privileges required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin privileges required',
+      });
     }
 
     const client = await clientPromise;
@@ -122,21 +136,23 @@ export async function GET(request: NextRequest) {
       stats.averageResources.energy = Math.floor(stats.totalResources.energy / stats.total);
     }
 
+    log.info('Bot statistics retrieved', {
+      totalBots: stats.total,
+      specialBases: stats.specialBases,
+      adminUser: tokenPayload.username,
+    });
+
     return NextResponse.json({
       success: true,
       data: stats,
     });
   } catch (error) {
-    console.error('Bot stats fetch error:', error);
-    return NextResponse.json(
-      {
-        error: 'Failed to fetch bot statistics',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      },
-      { status: 500 }
-    );
+    log.error('Failed to fetch bot statistics', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================================
 // IMPLEMENTATION NOTES

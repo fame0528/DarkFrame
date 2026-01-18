@@ -27,61 +27,76 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAuth } from '@/lib/authMiddleware';
 import { executeInfantryAttack } from '@/lib/battleService';
+import { 
+  withRequestLogging, 
+  createRouteLogger, 
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  InfantryCombatSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
 
-export async function POST(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.battle);
+
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('InfantryCombatAPI');
+  const endTimer = log.time('infantryCombat');
+
   try {
     // Verify authentication
     const authResult = await verifyAuth();
     if (!authResult || !authResult.username) {
-      return NextResponse.json(
-        { success: false, error: 'Authentication required' },
-        { status: 401 }
-      );
+      log.warn('Unauthenticated infantry combat attempt');
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required'
+      });
     }
 
     const attackerId = authResult.username;
 
-    // Parse request body
+    // Parse and validate request body
     const body = await request.json();
-    const { targetUsername, unitIds } = body;
-
-    // Validate inputs
-    if (!targetUsername || typeof targetUsername !== 'string') {
-      return NextResponse.json(
-        { success: false, error: 'Target username is required' },
-        { status: 400 }
-      );
-    }
-
-    if (!Array.isArray(unitIds) || unitIds.length === 0) {
-      return NextResponse.json(
-        { success: false, error: 'Must select at least one unit for attack' },
-        { status: 400 }
-      );
-    }
+    const validated = InfantryCombatSchema.parse(body);
 
     // Prevent self-attack
-    if (targetUsername === attackerId) {
-      return NextResponse.json(
-        { success: false, error: 'Cannot attack yourself' },
-        { status: 400 }
-      );
+    if (validated.targetUsername === attackerId) {
+      log.debug('Self-attack attempt blocked', { username: attackerId });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: 'Cannot attack yourself'
+      });
     }
 
+    log.debug('Infantry combat initiated', { 
+      attacker: attackerId, 
+      target: validated.targetUsername,
+      unitCount: validated.unitIds.length 
+    });
+
     // Execute infantry battle
-    const result = await executeInfantryAttack(attackerId, targetUsername, unitIds);
+    const result = await executeInfantryAttack(attackerId, validated.targetUsername, validated.unitIds);
+
+    log.info('Infantry combat completed', { 
+      attacker: attackerId, 
+      target: validated.targetUsername,
+      attackerLevelUp: result.attackerLevelUp,
+      defenderLevelUp: result.defenderLevelUp
+    });
 
     return NextResponse.json(result);
 
   } catch (error) {
-    console.error('Infantry battle error:', error);
-    return NextResponse.json(
-      {
-        success: false,
-        error: 'An unexpected error occurred during infantry battle',
-        details: error instanceof Error ? error.message : 'Unknown error'
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      log.warn('Infantry combat validation failed', { issues: error.issues });
+      return createValidationErrorResponse(error);
+    }
+
+    log.error('Infantry combat error', error as Error);
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

@@ -1,89 +1,94 @@
 /**
- * Clan Join API Route
- * POST /api/clan/join
+ * @file app/api/clan/join/route.ts
+ * @created 2025-10-17
+ * @updated 2025-10-23 (FID-20251023-001: Refactored to use centralized auth + JSDoc)
  * 
- * Accepts a clan invitation and adds the player to the clan.
- * Validates invitation exists, not expired, and player not already in a clan.
+ * OVERVIEW:
+ * Clan join endpoint. Allows players to accept invitations and join clans.
+ * Validates invitation validity, expiration, and membership constraints.
+ * 
+ * ROUTES:
+ * - POST /api/clan/join - Accept clan invitation
+ * 
+ * AUTHENTICATION:
+ * - Requires valid JWT token in 'token' cookie
+ * - Uses requireAuth() middleware
+ * 
+ * BUSINESS RULES:
+ * - Invitation must exist and not be expired
+ * - Player must not already be in a clan
+ * - Clan must not be at member capacity
+ * - Automatically removes invitation after acceptance
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import clientPromise from '@/lib/mongodb';
+import { 
+  getClientAndDatabase, 
+  requireAuth, 
+  withRequestLogging, 
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  JoinClanSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
 import { joinClan, initializeClanService } from '@/lib/clanService';
+import { ZodError } from 'zod';
 
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'your-secret-key-change-in-production'
-);
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.clanAction);
 
 /**
  * POST /api/clan/join
  * Accept a clan invitation
  * 
- * Request body:
- * {
- *   invitationId: string  // Invitation ID to accept
- * }
+ * @param request - NextRequest with authentication cookie and invitation ID in body
+ * @returns NextResponse with joined clan data
  * 
- * Response:
- * {
- *   success: true,
- *   clan: Clan            // Joined clan object
- * }
+ * @example
+ * POST /api/clan/join
+ * Body: { invitationId: "inv_123" }
+ * Response: { success: true, clan: {...}, message: "Welcome to Warriors!" }
+ * 
+ * @throws {400} Invitation ID required
+ * @throws {400} Already in a clan
+ * @throws {400} Clan is full
+ * @throws {401} Unauthorized
+ * @throws {404} Invitation not found or expired
+ * @throws {500} Failed to join clan
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('ClanJoinAPI');
+  const endTimer = log.time('clanJoin');
+  
   try {
-    // Check authentication via JWT cookie
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
+    const { client, db } = await getClientAndDatabase();
+
+    const auth = await requireAuth(request, db);
+    if (auth instanceof NextResponse) {
+      log.warn('Unauthenticated clan join attempt');
+      return auth;
     }
 
-    let username: string;
-    try {
-      const verified = await jwtVerify(token, JWT_SECRET);
-      username = verified.payload.username as string;
-    } catch (error) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid session' },
-        { status: 401 }
-      );
-    }
-
-    // Parse request body
     const body = await request.json();
-    const { invitationId } = body;
+    const validated = JoinClanSchema.parse(body);
 
-    // Validate required fields
-    if (!invitationId) {
-      return NextResponse.json(
-        { success: false, error: 'Invitation ID is required' },
-        { status: 400 }
-      );
-    }
+    log.debug('Processing clan invitation', { 
+      playerId: auth.playerId, 
+      invitationId: validated.invitationId 
+    });
 
-    // Get database connection
-    const client = await clientPromise;
-    const db = client.db('darkframe');
-
-    // Initialize clan service
     initializeClanService(client, db);
 
-    // Get player by username
-    const player = await db.collection('players').findOne({ username });
-    if (!player) {
-      return NextResponse.json(
-        { success: false, error: 'Player not found' },
-        { status: 404 }
-      );
-    }
+    const result = await joinClan(validated.invitationId, auth.playerId);
 
-    const playerId = player._id.toString();
-
-    // Accept invitation
-    const result = await joinClan(invitationId, playerId);
+    log.info('Player joined clan', { 
+      playerId: auth.playerId, 
+      clanName: result.clan.name,
+      clanId: result.clan._id 
+    });
 
     return NextResponse.json({
       success: true,
@@ -92,33 +97,33 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error: any) {
-    console.error('Clan join error:', error);
+    if (error instanceof ZodError) {
+      log.warn('Clan join validation failed', { issues: error.issues });
+      return createValidationErrorResponse(error);
+    }
 
-    // Handle specific errors
+    log.error('Clan join error', error instanceof Error ? error : new Error(String(error)));
+
     if (error.message?.includes('not found')) {
-      return NextResponse.json(
-        { success: false, error: 'Invitation not found or expired' },
-        { status: 404 }
-      );
+      return createErrorResponse(ErrorCode.CLAN_INVITATION_INVALID, {
+        message: 'Invitation not found or expired'
+      });
     }
 
     if (error.message?.includes('already in a clan')) {
-      return NextResponse.json(
-        { success: false, error: 'You are already in a clan' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.CLAN_ALREADY_MEMBER, {
+        message: 'You are already in a clan'
+      });
     }
 
     if (error.message?.includes('full')) {
-      return NextResponse.json(
-        { success: false, error: 'Clan is full' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.CLAN_FULL, {
+        message: 'Clan is full'
+      });
     }
 
-    return NextResponse.json(
-      { success: false, error: 'Failed to join clan' },
-      { status: 500 }
-    );
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

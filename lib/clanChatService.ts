@@ -107,7 +107,7 @@ export const CHAT_LIMITS = {
 // ============================================================================
 
 /**
- * Send chat message
+ * Send clan chat message
  * 
  * @param clanId - Clan ID
  * @param playerId - Player sending message
@@ -116,9 +116,9 @@ export const CHAT_LIMITS = {
  * @returns Created message
  * @throws Error if validation fails or rate limited
  * @example
- * const msg = await sendMessage('clan123', 'player456', 'Hello clan!');
+ * const msg = await sendClanChatMessage('clan123', 'player456', 'Hello clan!');
  */
-export async function sendMessage(
+export async function sendClanChatMessage(
   clanId: string,
   playerId: string,
   message: string,
@@ -229,17 +229,17 @@ export async function sendSystemMessage(
 }
 
 /**
- * Get chat messages with pagination
+ * Get clan chat messages with pagination
  * 
  * @param clanId - Clan ID
  * @param limit - Number of messages to retrieve
  * @param before - Get messages before this timestamp (for pagination)
  * @returns Array of messages (newest first)
  * @example
- * const messages = await getMessages('clan123', 50);
- * const olderMessages = await getMessages('clan123', 50, messages[messages.length - 1].timestamp);
+ * const messages = await getClanChatMessages('clan123', 50);
+ * const olderMessages = await getClanChatMessages('clan123', 50, messages[messages.length - 1].timestamp);
  */
-export async function getMessages(
+export async function getClanChatMessages(
   clanId: string,
   limit = CHAT_LIMITS.MESSAGES_PER_PAGE,
   before?: Date
@@ -266,7 +266,7 @@ export async function getMessages(
 }
 
 /**
- * Edit message (own messages only, within time limit)
+ * Edit clan chat message (own messages only, within time limit)
  * 
  * @param messageId - Message ID
  * @param playerId - Player editing (must be author)
@@ -274,9 +274,9 @@ export async function getMessages(
  * @returns Updated message
  * @throws Error if not authorized or time limit exceeded
  * @example
- * await editMessage('msg123', 'player456', 'Corrected message');
+ * await editClanChatMessage('msg123', 'player456', 'Corrected message');
  */
-export async function editMessage(
+export async function editClanChatMessage(
   messageId: string,
   playerId: string,
   newMessage: string
@@ -330,7 +330,7 @@ export async function editMessage(
 }
 
 /**
- * Delete message
+ * Delete clan chat message
  * Leaders/Co-Leaders can delete any message, others can only delete own
  * 
  * @param messageId - Message ID
@@ -339,9 +339,9 @@ export async function editMessage(
  * @returns Success status
  * @throws Error if not authorized
  * @example
- * await deleteMessage('msg123', 'clan123', 'player456');
+ * await deleteClanChatMessage('msg123', 'clan123', 'player456');
  */
-export async function deleteMessage(
+export async function deleteClanChatMessage(
   messageId: string,
   clanId: string,
   playerId: string

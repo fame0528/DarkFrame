@@ -2,11 +2,108 @@
 
 > Technical decisions, patterns, and system design
 
-**Last Updated:** 2025-10-22  
-**Project Status:** WMD Phase 1 Complete (13 services), VIP System Complete, Flag Tracker Integrated  
-**Features Completed:** 64 major features across 15 phases  
-**Code Volume:** ~45,000 lines production code  
+**Last Updated:** 2025-10-26  
+**Project Status:** ✅ PRODUCTION-READY - WMD Complete, Stripe Live, Referrals Operational  
+**Features Completed:** 70 major features across 18 phases  
+**Code Volume:** ~52,500 lines production code  
 **Technical Debt:** Minimal
+
+---
+
+## 💳 Payment & Monetization Architecture (2025-10-24)
+
+### Stripe Integration
+**Implementation:** Full payment processing with automated subscription management
+
+**Components:**
+- **Stripe Client** (`lib/stripe/stripeService.ts` - 368 lines):
+  - Lazy-loaded Stripe SDK initialization
+  - Checkout session creation with customer metadata
+  - Customer portal session generation
+  - Webhook signature verification
+  - Customer management and retrieval
+
+- **Subscription Automation** (`lib/stripe/subscriptionService.ts` - 438 lines):
+  - `grantVIP()` - Automated VIP activation with expiration calculation
+  - `revokeVIP()` - VIP removal on subscription cancellation
+  - `extendVIP()` - Renewal handling for recurring payments
+  - `recordPayment()` - Transaction logging in database
+  - `checkVIPStatus()` - Auto-revoke expired VIP
+
+- **API Routes:**
+  - `POST /api/stripe/create-checkout-session` - Initialize payment flow
+  - `POST /api/stripe/webhook` - Handle Stripe events (checkout, renewal, cancellation)
+  - `POST /api/stripe/verify-session` - Verify payment completion
+
+**Pricing Tiers:** 5 tiers ($9.99-$199.99)
+- Weekly ($9.99), Monthly ($19.99), Quarterly ($49.99), Biannual ($89.99), Yearly ($199.99)
+
+**Security:**
+- Webhook signature verification (STRIPE_WEBHOOK_SECRET)
+- Environment variable protection for API keys
+- Idempotent webhook processing (safe for retries)
+- Raw body parsing for signature validation
+
+**Database:**
+- Payment transactions logged in `players.payments` array
+- VIP status tracked with `vipExpiry`, `isVIP`, `vipTier` fields
+- Stripe customer ID stored for portal access
+
+---
+
+## 🎁 Referral System Architecture (2025-10-24)
+
+### Overview
+Organic player growth system with progressive rewards and anti-abuse protection
+
+**Components:**
+- **Core Service** (`lib/referralService.ts` - 576 lines):
+  - Unique referral code generation (DF-XXXXXXXX format)
+  - Code validation during registration
+  - Progressive reward calculation (1.05x scaling, cap at 2.0x)
+  - 8 milestone bonuses (1, 3, 5, 10, 15, 25, 50, 100 referrals)
+  - VIP cap enforcement (30 days maximum)
+  - Anti-abuse detection (IP tracking, email validation)
+  - 7-day + 4 login validation requirement
+  - Welcome package distribution
+
+- **API Endpoints:**
+  - `POST /api/referral/generate` - Generate player's referral code
+  - `GET /api/referral/validate?code=X` - Validate code during signup
+  - `GET /api/referral/stats` - User dashboard statistics
+  - `GET /api/referral/leaderboard?limit=50` - Top recruiters
+  - `GET /api/admin/referrals` - Admin management (search, filter, flag)
+  - `POST /api/admin/referrals/flag` - Flag suspicious referral
+  - `POST /api/admin/referrals/validate` - Manual validation
+
+- **Frontend Components:**
+  - `ReferralDashboard.tsx` (395 lines) - User dashboard with code sharing
+  - `ReferralLeaderboard.tsx` (289 lines) - Top recruiters leaderboard
+  - `app/referrals/page.tsx` (384 lines) - Main page with tabs (Dashboard, Leaderboard, Guide)
+  - `app/admin/referrals/page.tsx` (551 lines) - Admin management panel
+
+- **Automation:**
+  - Daily cron job (`scripts/validate-referrals-cron.ts` - 161 lines)
+  - Auto-validates referrals after 7 days if 4+ logins
+  - Auto-invalidates failed referrals
+  - Comprehensive logging and statistics
+
+**Reward Structure:**
+- Base: 10k metal/energy, 15 RP, 2k XP, 1 VIP per referral
+- Progressive: 1.05x scaling (caps at 2.0x on 15th referral)
+- Total at 100: ~5M resources, ~15k RP, ~1.5M XP, 30 VIP days
+- 8 milestones with special bonuses (units, titles, badges)
+
+**Database:**
+- New collection: `referrals` (tracking documents with status, timestamps, IP)
+- Player extensions: 15+ new fields (referralCode, referredBy, validatedReferrals, etc.)
+
+**Security:**
+- IP address tracking (max 3 accounts per IP)
+- Temporary email domain blocking
+- Risk level assessment (Low/Medium/High)
+- Admin flagging with reason tracking
+- Manual override capabilities
 
 ---
 

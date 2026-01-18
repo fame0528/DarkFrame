@@ -4,11 +4,22 @@
  * 
  * POST /api/clan/bank - Deposit/withdraw/set tax rates/upgrade
  * GET /api/clan/bank - Get bank status and transaction history
+ * 
+ * Updated: 2025-10-23 (FID-20251023-001: Refactored to use centralized auth)
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { jwtVerify } from 'jose';
-import clientPromise from '@/lib/mongodb';
+import {
+  getClientAndDatabase,
+  requireClanMembership,
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 import {
   depositToBank,
   withdrawFromBank,
@@ -18,11 +29,9 @@ import {
   getBankStats,
   initializeClanBankService,
 } from '@/lib/clanBankService';
-import { getClanByPlayerId, initializeClanService } from '@/lib/clanService';
+import { initializeClanService } from '@/lib/clanService';
 
-const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || 'your-secret-key-change-in-production'
-);
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET /api/clan/bank
@@ -38,57 +47,23 @@ const JWT_SECRET = new TextEncoder().encode(
  *   transactions: ClanBankTransaction[]
  * }
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('clan-bank-get');
+  const endTimer = log.time('bank-get');
+  
   try {
-    // Check authentication via JWT cookie
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
-    }
-
-    let username: string;
-    try {
-      const verified = await jwtVerify(token, JWT_SECRET);
-      username = verified.payload.username as string;
-    } catch (error) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid session' },
-        { status: 401 }
-      );
-    }
-
     // Get database connection
-    const client = await clientPromise;
-    const db = client.db('darkframe');
+    const { client, db } = await getClientAndDatabase();
+
+    // Authenticate and get clan (returns error response if fails)
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    
+    const { auth, clanId } = result;
 
     // Initialize services
     initializeClanService(client, db);
     initializeClanBankService(client, db);
-
-    // Get player by username
-    const player = await db.collection('players').findOne({ username });
-    if (!player) {
-      return NextResponse.json(
-        { success: false, error: 'Player not found' },
-        { status: 404 }
-      );
-    }
-
-    const playerId = player._id.toString();
-
-    // Get player's clan
-    const clan = await getClanByPlayerId(playerId);
-    if (!clan) {
-      return NextResponse.json(
-        { success: false, error: 'You are not in a clan' },
-        { status: 400 }
-      );
-    }
-
-    const clanId = clan._id!.toString();
 
     // Get query params
     const { searchParams } = new URL(request.url);
@@ -100,6 +75,7 @@ export async function GET(request: NextRequest) {
       getBankTransactionHistory(clanId, limit),
     ]);
 
+    log.info('Bank info retrieved', { clanId, transactionCount: transactions.length });
     return NextResponse.json({
       success: true,
       bankStats,
@@ -107,13 +83,12 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (error: any) {
-    console.error('Bank GET error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to get bank information' },
-      { status: 500 }
-    );
+    log.error('Failed to get bank info', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * POST /api/clan/bank
@@ -153,25 +128,18 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    // Check authentication via JWT cookie
-    const token = request.cookies.get('token')?.value;
-    if (!token) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
-    }
+    // Get database connection
+    const { client, db } = await getClientAndDatabase();
 
-    let username: string;
-    try {
-      const verified = await jwtVerify(token, JWT_SECRET);
-      username = verified.payload.username as string;
-    } catch (error) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid session' },
-        { status: 401 }
-      );
-    }
+    // Authenticate and get clan (returns error response if fails)
+    const result = await requireClanMembership(request, db);
+    if (result instanceof NextResponse) return result;
+    
+    const { auth, clanId } = result;
+
+    // Initialize services
+    initializeClanService(client, db);
+    initializeClanBankService(client, db);
 
     // Parse request body
     const body = await request.json();
@@ -185,36 +153,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get database connection
-    const client = await clientPromise;
-    const db = client.db('darkframe');
-
-    // Initialize services
-    initializeClanService(client, db);
-    initializeClanBankService(client, db);
-
-    // Get player by username
-    const player = await db.collection('players').findOne({ username });
-    if (!player) {
-      return NextResponse.json(
-        { success: false, error: 'Player not found' },
-        { status: 404 }
-      );
-    }
-
-    const playerId = player._id.toString();
-
-    // Get player's clan
-    const clan = await getClanByPlayerId(playerId);
-    if (!clan) {
-      return NextResponse.json(
-        { success: false, error: 'You are not in a clan' },
-        { status: 400 }
-      );
-    }
-
-    const clanId = clan._id!.toString();
-
     // Handle different actions
     let bank;
     let message;
@@ -227,7 +165,7 @@ export async function POST(request: NextRequest) {
             { status: 400 }
           );
         }
-        bank = await depositToBank(clanId, playerId, resources);
+        bank = await depositToBank(clanId, auth.playerId, resources);
         message = 'Resources deposited successfully';
         break;
 
@@ -238,7 +176,7 @@ export async function POST(request: NextRequest) {
             { status: 400 }
           );
         }
-        bank = await withdrawFromBank(clanId, playerId, resources);
+        bank = await withdrawFromBank(clanId, auth.playerId, resources);
         message = 'Resources withdrawn successfully';
         break;
 
@@ -249,12 +187,12 @@ export async function POST(request: NextRequest) {
             { status: 400 }
           );
         }
-        bank = await setTaxRates(clanId, playerId, taxRates);
+        bank = await setTaxRates(clanId, auth.playerId, taxRates);
         message = 'Tax rates updated successfully';
         break;
 
       case 'upgrade':
-        bank = await upgradeBankCapacity(clanId, playerId);
+        bank = await upgradeBankCapacity(clanId, auth.playerId);
         message = `Bank upgraded to level ${bank.upgradeLevel}`;
         break;
 
@@ -309,3 +247,4 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+

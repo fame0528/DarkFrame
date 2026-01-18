@@ -1,5 +1,6 @@
 /**
  * 📅 Created: 2025-01-18
+ * 📅 Updated: 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * 🎯 OVERVIEW:
  * Resource Trends Analytics Endpoint
  * 
@@ -8,7 +9,8 @@
  * Used by resource gains area chart on admin dashboard.
  * 
  * GET /api/admin/analytics/resource-trends
- * - Admin-only access (rank >= 5)
+ * - Admin-only access (isAdmin flag)
+ * - Rate Limited: 500 req/min (admin analytics)
  * - Query params: period (24h, 7d, 30d)
  * - Returns: Time-series data with metal/energy totals per interval
  */
@@ -16,23 +18,35 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authService';
 import clientPromise from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 
-export async function GET(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
+
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminResourceTrendsAPI');
+  const endTimer = log.time('fetch-resource-trends');
+
   try {
     // Admin authentication check
     const user = await getAuthenticatedUser();
     if (!user) {
-      return NextResponse.json(
-        { success: false, error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     if (user.isAdmin !== true) {
-      return NextResponse.json(
-        { success: false, error: 'Admin access required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin access required',
+      });
     }
 
     const { searchParams } = new URL(request.url);
@@ -142,6 +156,14 @@ export async function GET(request: NextRequest) {
       { $limit: 10 }
     ]).toArray();
 
+    log.info('Resource trends fetched successfully', {
+      period,
+      totalResources,
+      peakResources,
+      topGatherersCount: topGatherers.length,
+      adminUser: user.username,
+    });
+
     return NextResponse.json({
       success: true,
       period,
@@ -166,16 +188,12 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Resource trends fetch error:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to fetch resource trends'
-      },
-      { status: 500 }
-    );
+    log.error('Failed to fetch resource trends', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * 📝 IMPLEMENTATION NOTES:

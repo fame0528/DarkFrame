@@ -389,8 +389,10 @@ export interface ClanTaxConfig {
 
 /**
  * Clan bank transaction types
+ * Note: Different from general BankTransactionType in game.types.ts
+ * This is specific to clan banking operations
  */
-export enum BankTransactionType {
+export enum ClanBankTransactionType {
   DEPOSIT = 'DEPOSIT',
   WITHDRAWAL = 'WITHDRAWAL',
   TAX_COLLECTION = 'TAX_COLLECTION',
@@ -404,7 +406,7 @@ export enum BankTransactionType {
  */
 export interface ClanBankTransaction {
   transactionId: string;
-  type: BankTransactionType;
+  type: ClanBankTransactionType;
   playerId?: string;
   username?: string;
   amount: {

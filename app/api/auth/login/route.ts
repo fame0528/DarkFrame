@@ -1,52 +1,54 @@
 /**
  * @file app/api/auth/login/route.ts
  * @created 2025-10-16
+ * @updated 2025-10-24 (Phase 2: Production infrastructure - validation, errors, rate limiting)
  * @overview Login endpoint with JWT authentication
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getPlayerByEmail } from '@/lib/playerService';
 import { getTileAt } from '@/lib/movementService';
-import { verifyPassword, generateToken, setAuthCookie, isValidEmail } from '@/lib/authService';
-import { logger } from '@/lib/logger';
+import { verifyPassword, generateToken, setAuthCookie } from '@/lib/authService';
+import { 
+  withRequestLogging, 
+  createRouteLogger, 
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  LoginSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
 import { startSession } from '@/lib/sessionTracker';
 import { logActivity } from '@/lib/activityLogger';
+import { ZodError } from 'zod';
 
-export async function POST(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.login);
+
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AuthLogin');
+  const endTimer = log.time('loginProcess');
   try {
-    const { email, password, rememberMe } = await request.json();
+    // Parse and validate request body
+    const body = await request.json();
+    const validated = LoginSchema.parse(body);
+    const { email, password, rememberMe } = validated;
     
-    // Validate inputs
-    if (!email || !password) {
-      return NextResponse.json(
-        { success: false, error: 'Email and password are required' },
-        { status: 400 }
-      );
-    }
-    
-    if (!isValidEmail(email)) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid email format' },
-        { status: 400 }
-      );
-    }
+    log.debug('Login attempt', { email, rememberMe });
     
     // Get player by email
     const player = await getPlayerByEmail(email);
     if (!player) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid email or password' },
-        { status: 401 }
-      );
+      log.warn('Login failed', { reason: 'user_not_found', email });
+      return createErrorResponse(ErrorCode.AUTH_INVALID_CREDENTIALS);
     }
     
     // Verify password
     const passwordValid = await verifyPassword(password, player.password);
     if (!passwordValid) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid email or password' },
-        { status: 401 }
-      );
+      log.warn('Login failed', { reason: 'invalid_password', username: player.username });
+      return createErrorResponse(ErrorCode.AUTH_INVALID_CREDENTIALS);
     }
     
     // Generate JWT token with isAdmin flag
@@ -76,9 +78,10 @@ export async function POST(request: NextRequest) {
     // Remove password from response
     const { password: _, ...playerWithoutPassword } = player;
     
-    logger.success('Login successful', { 
+    log.info('Login successful', { 
       username: player.username, 
-      rememberMe: rememberMe || false 
+      rememberMe: rememberMe || false,
+      isAdmin: player.isAdmin || false
     });
     
     // Create response with session cookie
@@ -96,7 +99,7 @@ export async function POST(request: NextRequest) {
       const playersCollection = await getCollection('players');
       await playersCollection.updateOne({ username: player.username }, { $set: { lastActive: new Date() } });
     } catch (err) {
-      console.debug('Failed to update lastActive on login:', String(err));
+      log.debug('Failed to update lastActive', { error: String(err) });
     }
     
     // Set session ID cookie for activity tracking
@@ -118,13 +121,19 @@ export async function POST(request: NextRequest) {
     return response;
     
   } catch (error) {
-    logger.error('Login error', error instanceof Error ? error : new Error(String(error)));
-    return NextResponse.json(
-      { success: false, error: 'Internal server error' },
-      { status: 500 }
-    );
+    log.error('Login error', error as Error);
+    
+    // Handle validation errors
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    
+    // Handle all other errors
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // END OF FILE

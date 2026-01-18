@@ -27,7 +27,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken } from '@/lib/authService';
 import { queryActivityLogs } from '@/lib/activityLogService';
-import { queryBattleLogs, getPlayerCombatStats } from '@/lib/battleLogService';
+import { queryBattleLogs, getPlayerCombatStatistics } from '@/lib/battleLogService';
 
 /**
  * GET /api/logs/player/[id]
@@ -51,7 +51,7 @@ import { queryBattleLogs, getPlayerCombatStats } from '@/lib/battleLogService';
  */
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
     // Extract and verify authentication token
@@ -71,8 +71,9 @@ export async function GET(
       );
     }
     
-    const requestingPlayer = payload.username;
-    const targetPlayerId = params.id;
+  const requestingPlayer = payload.username;
+  const { id } = await context.params;
+  const targetPlayerId = id;
 
     // Authorization: Users can only view their own logs unless admin
     // TODO: Add admin role check from user profile/database
@@ -178,7 +179,7 @@ export async function GET(
       responseData.battleCount = battleLogs.length;
 
       // Include combat statistics for battle view
-      const combatStats = await getPlayerCombatStats(targetPlayerId);
+      const combatStats = await getPlayerCombatStatistics(targetPlayerId);
       responseData.combatStats = combatStats;
     }
 

@@ -1,6 +1,7 @@
 /**
  * @file app/api/bank/withdraw/route.ts
  * @created 2025-10-17
+ * @modified 2025-10-24 - Phase 2: Production infrastructure - validation, errors, rate limiting
  * @overview Bank withdrawal API endpoint (no fee)
  * 
  * OVERVIEW:
@@ -11,7 +12,21 @@
 import { NextResponse } from 'next/server';
 import { verifyAuth } from '@/lib/authMiddleware';
 import { getCollection } from '@/lib/mongodb';
-import { Player, Tile, TerrainType, BankTransaction, BankStorage, Resources } from '@/types';
+import { Player, Tile, TerrainType, BankTransaction, Resources } from '@/types';
+import { 
+  withRequestLogging, 
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  BankWithdrawSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.bankWithdraw);
 
 /**
  * POST /api/bank/withdraw
@@ -36,44 +51,33 @@ import { Player, Tile, TerrainType, BankTransaction, BankStorage, Resources } fr
  * }
  * ```
  */
-export async function POST(request: Request) {
+export const POST = withRequestLogging(rateLimiter(async (request: Request) => {
+  const log = createRouteLogger('BankWithdraw');
+  const endTimer = log.time('withdrawOperation');
+  
   try {
     // Verify authentication
     const authResult = await verifyAuth();
     if (!authResult || !authResult.username) {
-      return NextResponse.json(
-        { success: false, message: 'Authentication required' },
-        { status: 401 }
-      );
+      log.warn('Unauthenticated withdrawal attempt');
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED);
     }
 
-    const { resourceType, amount } = await request.json();
+    // Parse and validate request body
+    const body = await request.json();
+    const validated = BankWithdrawSchema.parse(body);
+    const { resourceType, amount } = validated;
     const username = authResult.username;
-
-    // Validate inputs
-    if (!resourceType || !['metal', 'energy'].includes(resourceType)) {
-      return NextResponse.json(
-        { success: false, message: 'Invalid resource type. Must be "metal" or "energy"' },
-        { status: 400 }
-      );
-    }
-
-    if (typeof amount !== 'number' || amount <= 0 || !Number.isInteger(amount)) {
-      return NextResponse.json(
-        { success: false, message: 'Amount must be a positive integer' },
-        { status: 400 }
-      );
-    }
+    
+    log.debug('Processing withdrawal', { username, resourceType, amount });
 
     // Get player
     const playersCollection = await getCollection<Player>('players');
     const player = await playersCollection.findOne({ username });
 
     if (!player) {
-      return NextResponse.json(
-        { success: false, message: 'Player not found' },
-        { status: 404 }
-      );
+      log.warn('Player not found', { username });
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED);
     }
 
     // Check if player is at a bank tile
@@ -84,29 +88,28 @@ export async function POST(request: Request) {
     });
 
     if (!currentTile || currentTile.terrain !== TerrainType.Bank) {
-      return NextResponse.json(
-        { success: false, message: 'You must be at a Bank tile to withdraw resources' },
-        { status: 400 }
-      );
+      log.warn('Withdrawal attempt not at bank', { username, position: player.currentPosition });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, { message: 'You must be at a Bank tile to withdraw resources' });
     }
 
     // Check if player has bank initialized
     if (!player.bank) {
-      return NextResponse.json(
-        { success: false, message: 'No bank account found' },
-        { status: 400 }
-      );
+      log.warn('No bank account found', { username });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, { message: 'No bank account found' });
     }
 
     // Check if player has enough in bank
     const bankAmount = resourceType === 'metal' ? player.bank.metal : player.bank.energy;
     if (bankAmount < amount) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: `Insufficient ${resourceType} in bank. Have ${bankAmount.toLocaleString()}, requested ${amount.toLocaleString()}`
-        },
-        { status: 400 }
+      log.warn('Insufficient bank balance', { 
+        username, 
+        resourceType, 
+        requested: amount, 
+        have: bankAmount 
+      });
+      return createErrorResponse(
+        ErrorCode.BANK_BALANCE_INSUFFICIENT,
+        { resourceType, requested: amount, have: bankAmount }
       );
     }
 
@@ -134,6 +137,13 @@ export async function POST(request: Request) {
     // Get updated player data
     const updatedPlayer = await playersCollection.findOne({ username });
 
+    log.info('Withdrawal successful', { 
+      username, 
+      resourceType, 
+      amount,
+      remainingInBank: bankAmount - amount
+    });
+
     return NextResponse.json({
       success: true,
       message: `Withdrew ${amount.toLocaleString()} ${resourceType.charAt(0).toUpperCase() + resourceType.slice(1)} from bank`,
@@ -142,10 +152,16 @@ export async function POST(request: Request) {
     });
 
   } catch (error) {
-    console.error('Bank withdrawal error:', error);
-    return NextResponse.json(
-      { success: false, message: 'Failed to withdraw resources' },
-      { status: 500 }
-    );
+    log.error('Bank withdrawal error', error as Error);
+    
+    // Handle validation errors
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    
+    // Handle all other errors
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

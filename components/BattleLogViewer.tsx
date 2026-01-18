@@ -28,6 +28,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useGameContext } from '@/context/GameContext';
+import { formatDate } from '@/utils/formatting';
 import { BattleLog, BattleOutcome, BattleType } from '@/types/game.types';
 
 interface BattleLogViewerProps {
@@ -120,16 +121,6 @@ export default function BattleLogViewer({ isOpen = true, onClose, limit = 20 }: 
     return (isAttacker && b.outcome === BattleOutcome.DefenderWin) ||
            (!isAttacker && b.outcome === BattleOutcome.AttackerWin);
   }).length;
-
-  const formatDate = (date: Date | string) => {
-    const d = typeof date === 'string' ? new Date(date) : date;
-    return d.toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
 
   return (
     <div className={`${onClose ? 'fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4' : ''}`}>
@@ -284,7 +275,7 @@ export default function BattleLogViewer({ isOpen = true, onClose, limit = 20 }: 
                                   <span>•</span>
                                   <span>{battle.totalRounds} rounds</span>
                                   <span>•</span>
-                                  <span>{formatDate(battle.timestamp)}</span>
+                                  <span>{formatDate(battle.timestamp, true)}</span>
                                 </div>
                               </div>
                             </div>
@@ -460,3 +451,4 @@ export default function BattleLogViewer({ isOpen = true, onClose, limit = 20 }: 
  * - Advanced filters (date range, XP range)
  * - Battle share feature (copy link/stats)
  */
+

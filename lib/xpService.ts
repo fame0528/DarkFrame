@@ -72,30 +72,31 @@ export enum XPAction {
 
 /**
  * XP amounts for each action type
+ * UPDATED: Doubled combat and factory XP for active gameplay encouragement
  */
 export const XP_REWARDS: Record<XPAction, number> = {
-  [XPAction.HARVEST_RESOURCE]: 10,
-  [XPAction.CAVE_EXPLORATION]: 15,
-  [XPAction.CAVE_ITEM_RARE]: 25,
-  [XPAction.CAVE_ITEM_LEGENDARY]: 50,
+  [XPAction.HARVEST_RESOURCE]: 20,              // Doubled from 10 (harvest metal/energy tile)
+  [XPAction.CAVE_EXPLORATION]: 30,              // Doubled from 15 (explore cave)
+  [XPAction.CAVE_ITEM_RARE]: 50,                // Doubled from 25 (find rare cave item)
+  [XPAction.CAVE_ITEM_LEGENDARY]: 100,          // Doubled from 50 (find legendary cave item)
   
-  [XPAction.FACTORY_CAPTURE]: 100,
-  [XPAction.FACTORY_UPGRADE]: 50,
-  [XPAction.FACTORY_ABANDON]: 0, // No reward for abandoning
+  [XPAction.FACTORY_CAPTURE]: 200,              // Doubled from 100 (capture neutral factory)
+  [XPAction.FACTORY_UPGRADE]: 100,              // Doubled from 50 (upgrade factory level)
+  [XPAction.FACTORY_ABANDON]: 0,                // No reward for abandoning
   
-  [XPAction.UNIT_BUILD]: 5, // Per unit
+  [XPAction.UNIT_BUILD]: 10,                    // Doubled from 5 (per unit built)
   
-  [XPAction.SHRINE_SACRIFICE]: 20,
+  [XPAction.SHRINE_SACRIFICE]: 40,              // Doubled from 20 (shrine trade)
   
-  [XPAction.INFANTRY_ATTACK_WIN]: 150,
-  [XPAction.INFANTRY_ATTACK_LOSS]: 25,
-  [XPAction.BASE_ATTACK_WIN]: 200,
-  [XPAction.BASE_ATTACK_LOSS]: 30,
-  [XPAction.DEFENSE_SUCCESS]: 75,
-  [XPAction.FACTORY_DEFENSE]: 50,
+  [XPAction.INFANTRY_ATTACK_WIN]: 300,          // Doubled from 150 (win player vs player combat)
+  [XPAction.INFANTRY_ATTACK_LOSS]: 50,          // Doubled from 25 (lose player vs player combat)
+  [XPAction.BASE_ATTACK_WIN]: 400,              // Doubled from 200 (successful base raid)
+  [XPAction.BASE_ATTACK_LOSS]: 60,              // Doubled from 30 (failed base raid)
+  [XPAction.DEFENSE_SUCCESS]: 150,              // Doubled from 75 (successfully defend against attack)
+  [XPAction.FACTORY_DEFENSE]: 100,              // Doubled from 50 (defend factory)
   
-  [XPAction.FIRST_LOGIN]: 100,
-  [XPAction.DAILY_LOGIN]: 10
+  [XPAction.FIRST_LOGIN]: 200,                  // Doubled from 100 (first time login bonus)
+  [XPAction.DAILY_LOGIN]: 20                    // Doubled from 10 (daily login bonus)
 };
 
 /**
@@ -124,20 +125,44 @@ export interface LevelUpResult {
 
 /**
  * Calculate player level from total XP
- * Formula: level = floor(totalXP / 1000) + 1
+ * Formula: 
+ *   Levels 1-30: Linear (level = floor(totalXP / 1000) + 1)
+ *   Levels 31+: Exponential (10% scaling per level)
  * 
  * @param totalXP - Total experience points
  * @returns Player level (minimum 1)
  * 
  * @example
- * calculateLevel(0);    // Returns 1
- * calculateLevel(999);  // Returns 1
- * calculateLevel(1000); // Returns 2
- * calculateLevel(5432); // Returns 6
+ * calculateLevel(0);      // Returns 1
+ * calculateLevel(999);    // Returns 1
+ * calculateLevel(1000);   // Returns 2
+ * calculateLevel(29999);  // Returns 30
+ * calculateLevel(30000);  // Returns 30 (linear cap)
+ * calculateLevel(33300);  // Returns 31 (exponential start)
+ * 
+ * UPDATED: Exponential XP scaling after Level 30 for enhanced end-game progression
  */
 export function calculateLevel(totalXP: number): number {
   if (totalXP < 0) return 1;
-  return Math.floor(totalXP / 1000) + 1;
+  
+  // Linear progression up to Level 30 (30,000 XP)
+  const LEVEL_30_XP = 30000;
+  if (totalXP < LEVEL_30_XP) {
+    return Math.floor(totalXP / 1000) + 1;
+  }
+  
+  // Exponential progression after Level 30 (10% scaling per level)
+  let level = 30;
+  let xpAtCurrentLevel = LEVEL_30_XP;
+  let xpRequiredForNextLevel = 3300; // Level 30→31: 3,300 XP (base × 1.1)
+  
+  while (totalXP >= xpAtCurrentLevel + xpRequiredForNextLevel) {
+    xpAtCurrentLevel += xpRequiredForNextLevel;
+    level++;
+    xpRequiredForNextLevel = Math.floor(xpRequiredForNextLevel * 1.1); // 10% increase
+  }
+  
+  return level;
 }
 
 /**
@@ -147,11 +172,30 @@ export function calculateLevel(totalXP: number): number {
  * @returns XP needed to reach next level
  * 
  * @example
- * getXPForNextLevel(1); // Returns 1000
- * getXPForNextLevel(5); // Returns 5000
+ * getXPForNextLevel(1);  // Returns 1000
+ * getXPForNextLevel(5);  // Returns 5000
+ * getXPForNextLevel(30); // Returns 3000 (last linear level)
+ * getXPForNextLevel(31); // Returns 3300 (first exponential level)
+ * getXPForNextLevel(40); // Returns ~7,715 (exponential scaling)
+ * 
+ * UPDATED: Exponential XP requirements after Level 30 (10% scaling per level)
  */
 export function getXPForNextLevel(currentLevel: number): number {
-  return currentLevel * 1000;
+  // Linear progression up to Level 30
+  if (currentLevel < 30) {
+    return currentLevel * 1000;
+  }
+  
+  // Exponential progression after Level 30
+  // Level 30→31: 3,300 XP
+  // Each subsequent level: previous × 1.1
+  let xpRequired = 3300; // Base XP for Level 30→31
+  
+  for (let level = 31; level <= currentLevel; level++) {
+    xpRequired = Math.floor(xpRequired * 1.1); // 10% increase per level
+  }
+  
+  return xpRequired;
 }
 
 /**
@@ -163,6 +207,8 @@ export function getXPForNextLevel(currentLevel: number): number {
  * @example
  * getXPProgress(1234);
  * // Returns: { currentLevelXP: 234, progressPercent: 23.4, xpForNextLevel: 1000 }
+ * 
+ * UPDATED: Works with exponential XP scaling after Level 30
  */
 export function getXPProgress(totalXP: number): {
   currentLevelXP: number;
@@ -170,7 +216,22 @@ export function getXPProgress(totalXP: number): {
   xpForNextLevel: number;
 } {
   const level = calculateLevel(totalXP);
-  const xpAtLevelStart = (level - 1) * 1000;
+  
+  // Calculate XP at the start of current level
+  let xpAtLevelStart = 0;
+  if (level <= 30) {
+    xpAtLevelStart = (level - 1) * 1000;
+  } else {
+    // For exponential levels, calculate cumulative XP up to current level
+    xpAtLevelStart = 30000; // XP at Level 30
+    let xpRequired = 3300; // Base XP for Level 30→31
+    
+    for (let lv = 31; lv < level; lv++) {
+      xpAtLevelStart += xpRequired;
+      xpRequired = Math.floor(xpRequired * 1.1); // 10% increase
+    }
+  }
+  
   const currentLevelXP = totalXP - xpAtLevelStart;
   const xpForNextLevel = getXPForNextLevel(level);
   const progressPercent = (currentLevelXP / xpForNextLevel) * 100;

@@ -1,5 +1,6 @@
 /**
  * 📅 Created: 2025-01-18
+ * 📅 Updated: 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * 🎯 OVERVIEW:
  * Activity Trends Analytics Endpoint
  * 
@@ -8,7 +9,8 @@
  * Used by activity timeline chart on admin dashboard.
  * 
  * GET /api/admin/analytics/activity-trends
- * - Admin-only access (rank >= 5)
+ * - Admin-only access (isAdmin flag)
+ * - Rate Limited: 500 req/min (admin analytics)
  * - Query params: period (24h, 7d, 30d), actionType (optional filter)
  * - Returns: Time-series data with timestamps and action counts
  */
@@ -16,23 +18,35 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authService';
 import clientPromise from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 
-export async function GET(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
+
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminActivityTrendsAPI');
+  const endTimer = log.time('fetch-activity-trends');
+
   try {
     // Admin authentication check
     const user = await getAuthenticatedUser();
     if (!user) {
-      return NextResponse.json(
-        { success: false, error: 'Authentication required' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Authentication required',
+      });
     }
 
     if (user.isAdmin !== true) {
-      return NextResponse.json(
-        { success: false, error: 'Admin access required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin access required',
+      });
     }
 
     const { searchParams } = new URL(request.url);
@@ -126,6 +140,14 @@ export async function GET(request: NextRequest) {
     const avgActionsPerInterval = filledData.length > 0 ? totalActions / filledData.length : 0;
     const peakActivity = Math.max(...filledData.map((d: any) => d.count), 0);
 
+    log.info('Activity trends fetched successfully', {
+      period,
+      totalActions,
+      peakActivity,
+      dataPoints: filledData.length,
+      adminUser: user.username,
+    });
+
     return NextResponse.json({
       success: true,
       period,
@@ -144,16 +166,12 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Activity trends fetch error:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to fetch activity trends'
-      },
-      { status: 500 }
-    );
+    log.error('Failed to fetch activity trends', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * 📝 IMPLEMENTATION NOTES:

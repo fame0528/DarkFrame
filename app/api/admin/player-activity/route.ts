@@ -15,6 +15,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
 import { PlayerActivity } from '@/types';
 import { getAuthenticatedUser } from '@/lib/authMiddleware';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
 
 /**
  * GET /api/admin/player-activity?userId=PlayerOne&limit=100&page=1
@@ -38,15 +49,15 @@ import { getAuthenticatedUser } from '@/lib/authMiddleware';
  * GET /api/admin/player-activity?userId=PlayerOne&limit=50&page=1
  * GET /api/admin/player-activity?userId=PlayerOne&action=harvest&hoursAgo=24
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/player-activity');
+  const endTimer = log.time('get-player-activity');
+
   try {
     const user = await getAuthenticatedUser();
 
     if (!user || (user.rank ?? 0) < 5) {
-      return NextResponse.json(
-        { success: false, error: 'Admin access required (rank 5+)' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, 'Admin access required (rank 5+)');
     }
 
     const searchParams = request.nextUrl.searchParams;
@@ -57,10 +68,7 @@ export async function GET(request: NextRequest) {
     const hoursAgoStr = searchParams.get('hoursAgo');
 
     if (!userId) {
-      return NextResponse.json(
-        { success: false, error: 'userId parameter required' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'userId parameter required');
     }
 
     const limit = Math.min(parseInt(limitStr), 500);
@@ -95,6 +103,14 @@ export async function GET(request: NextRequest) {
 
     const totalPages = Math.ceil(totalCount / limit);
 
+    log.info('Player activity retrieved', {
+      userId,
+      totalCount,
+      page,
+      totalPages,
+      actionFilter: actionFilter || 'all',
+    });
+
     return NextResponse.json({
       success: true,
       activities,
@@ -104,13 +120,12 @@ export async function GET(request: NextRequest) {
       limit,
     });
   } catch (error) {
-    console.error('Player activity API error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch player activity' },
-      { status: 500 }
-    );
+    log.error('Failed to fetch player activity', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

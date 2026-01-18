@@ -1,6 +1,7 @@
 /**
  * @file app/api/admin/fix-base/route.ts
  * @created 2025-10-18
+ * @updated 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * @overview Admin-only endpoint to fix base tiles
  */
 
@@ -8,16 +9,29 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
 import { getAuthenticatedUser } from '@/lib/authMiddleware';
 import { Player, Tile, TerrainType } from '@/types';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 
-export async function POST(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.adminBot);
+
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminFixBaseAPI');
+  const endTimer = log.time('fix-base');
+
   try {
     const user = await getAuthenticatedUser();
     
     if (!user || user.isAdmin !== true) {
-      return NextResponse.json(
-        { success: false, error: 'Admin only' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin access required',
+      });
     }
     
     const playersCollection = await getCollection<Player>('players');
@@ -41,20 +55,24 @@ export async function POST(request: NextRequest) {
       
       if (result.modifiedCount > 0) {
         fixedCount++;
-        console.log(`✅ Fixed ${player.username}'s base at (${x}, ${y})`);
+        log.debug(`Fixed ${player.username}'s base at (${x}, ${y})`);
       }
     }
     
+    log.info('Base tiles fixed', {
+      fixedCount,
+      adminUser: user.username,
+    });
+
     return NextResponse.json({ 
       success: true, 
       message: `Fixed ${fixedCount} base tiles` 
     });
     
   } catch (error) {
-    console.error('Fix base error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to fix bases' },
-      { status: 500 }
-    );
+    log.error('Failed to fix bases', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));

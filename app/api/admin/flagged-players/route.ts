@@ -1,9 +1,11 @@
 /**
  * 📅 Created: 2025-01-18
+ * 📅 Updated: 2025-10-24 (FID-20251024-ADMIN: Production Infrastructure)
  * 🎯 OVERVIEW:
  * Flagged Players Admin Endpoint
  * 
  * GET /api/admin/flagged-players
+ * Rate Limited: 500 req/min (admin dashboard)
  * - Returns all players with active anti-cheat flags
  * - Supports filtering by flag type and severity
  * - Admin-only access (rank >= 5)
@@ -13,16 +15,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authService';
 import clientPromise from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 
-export async function GET(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
+
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminFlaggedPlayersAPI');
+  const endTimer = log.time('flagged-players');
+
   try {
     // Admin authentication check
     const user = await getAuthenticatedUser();
     if (!user || !user.rank || user.rank < 5) {
-      return NextResponse.json(
-        { success: false, error: 'Admin access required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, {
+        message: 'Admin access required (rank 5+)',
+      });
     }
 
     const { searchParams } = new URL(request.url);
@@ -125,6 +140,13 @@ export async function GET(request: NextRequest) {
       lowPlayers: flaggedPlayers.filter((p: any) => p.lowCount > 0).length
     };
 
+    log.info('Flagged players retrieved', {
+      totalFlaggedPlayers: stats.totalFlaggedPlayers,
+      totalFlags: stats.totalFlags,
+      criticalPlayers: stats.criticalPlayers,
+      adminUser: user.username,
+    });
+
     return NextResponse.json({
       success: true,
       data: enrichedData,
@@ -137,16 +159,12 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Flagged players fetch error:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to fetch flagged players'
-      },
-      { status: 500 }
-    );
+    log.error('Failed to fetch flagged players', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * 📝 IMPLEMENTATION NOTES:

@@ -9,6 +9,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useGameContext } from '@/context/GameContext';
 import { TerrainType, HarvestResult } from '@/types';
+import { isTypingInInput } from '@/hooks/useKeyboardShortcut';
 
 interface HarvestButtonProps {
   onHarvestResult?: (result: HarvestResult) => void;
@@ -84,6 +85,11 @@ export default function HarvestButton({ onHarvestResult }: HarvestButtonProps) {
     const tile = currentTile;
     
     function handleKeyPress(event: KeyboardEvent) {
+      // Ignore if typing in input field
+      if (isTypingInInput()) {
+        return;
+      }
+
       if (isHarvesting || isLoading) return;
       
       const isMetal = tile.terrain === TerrainType.Metal;

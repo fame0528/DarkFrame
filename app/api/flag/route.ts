@@ -20,6 +20,17 @@ import { ObjectId } from 'mongodb';
 import { type FlagBearer, type FlagAPIResponse, type FlagAttackRequest, type FlagAttackResponse, FLAG_CONFIG } from '@/types/flag.types';
 import { calculateDistance } from '@/lib/flagService';
 import { handleFlagBotDefeat } from '@/lib/flagBotService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.FLAG_DATA);
 
 /**
  * GET /api/flag
@@ -38,7 +49,10 @@ import { handleFlagBotDefeat } from '@/lib/flagBotService';
  * }
  * ```
  */
-export async function GET(request: NextRequest): Promise<NextResponse<FlagAPIResponse<FlagBearer | null>>> {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest): Promise<NextResponse<FlagAPIResponse<FlagBearer | null>>> => {
+  const log = createRouteLogger('flag-get');
+  const endTimer = log.time('flag-get');
+  
   try {
     const db = await getDatabase();
     const flagDoc = await db.collection('flags').findOne({});
@@ -91,6 +105,7 @@ export async function GET(request: NextRequest): Promise<NextResponse<FlagAPIRes
       }))
     };
     
+    log.info('Flag bearer retrieved', { holderId, holdDuration });
     return NextResponse.json({
       success: true,
       data: bearer,
@@ -98,15 +113,16 @@ export async function GET(request: NextRequest): Promise<NextResponse<FlagAPIRes
     });
     
   } catch (error) {
-    console.error('[Flag API] Error fetching Flag Bearer:', error);
-    
+    log.error('Failed to fetch flag bearer', error instanceof Error ? error : new Error(String(error)));
     return NextResponse.json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to fetch Flag Bearer data',
       timestamp: new Date()
     }, { status: 500 });
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * POST /api/flag/attack

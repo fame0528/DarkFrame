@@ -34,14 +34,27 @@ import {
 
 interface StatsPanelProps {
   onClanClick?: () => void;
+  onReferralsClick?: () => void;
+  onFactoryManagementClick?: () => void;
+  flagBearer?: {
+    playerId: string;
+    username: string;
+    level: number;
+    position: { x: number; y: number };
+    currentHP?: number;
+    maxHP?: number;
+  } | null;
 }
 
-export default function StatsPanel({ onClanClick }: StatsPanelProps = {}) {
+export default function StatsPanel({ onClanClick, onReferralsClick, onFactoryManagementClick, flagBearer }: StatsPanelProps = {}) {
   const { player, logout, refreshPlayer } = useGameContext();
   const router = useRouter();
   const [boostTimers, setBoostTimers] = useState<Record<string, string>>({});
   const [clanTag, setClanTag] = useState<string | null>(null);
   const isMobile = useIsMobile();
+  
+  // Check if current player is flag bearer
+  const isPlayerFlagBearer = flagBearer && player && flagBearer.username === player.username;
 
   // Animated counts for key stats
   const metalCount = useCountUp(player?.resources.metal || 0, { duration: 1000 });
@@ -129,32 +142,6 @@ export default function StatsPanel({ onClanClick }: StatsPanelProps = {}) {
 
   return (
     <div className="space-y-3 p-3">
-      {/* Position - At the Top */}
-      <div className="bg-gray-900/60 backdrop-blur-sm border-2 border-cyan-500/30 rounded-lg overflow-hidden shadow-[0_0_20px_rgba(0,240,255,0.2)]">
-        {/* Banner Title */}
-        <div className="bg-gradient-to-r from-cyan-500/20 to-blue-500/20 border-b border-cyan-500/30 px-3 py-2">
-          <h3 className="text-sm font-bold text-white font-display flex items-center gap-2">
-            <MapPin className="w-4 h-4" />
-            POSITION
-          </h3>
-        </div>
-        {/* Content */}
-        <div className="p-3 space-y-2 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-white/70">Current</span>
-            <span className="font-mono text-white font-semibold">
-              ({player.currentPosition.x}, {player.currentPosition.y})
-            </span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-white/70">Base</span>
-            <span className="font-mono text-white/80">
-              ({player.base.x}, {player.base.y})
-            </span>
-          </div>
-        </div>
-      </div>
-
       {/* Player Info */}
       <div className="bg-gray-900/60 backdrop-blur-sm border-2 border-cyan-500/30 rounded-lg overflow-hidden shadow-[0_0_20px_rgba(0,240,255,0.2)]">
         {/* Banner Title */}
@@ -164,11 +151,21 @@ export default function StatsPanel({ onClanClick }: StatsPanelProps = {}) {
             PLAYER INFO
           </h3>
         </div>
-        {/* Content */}
+        {/* Content - Alphabetical Order */}
         <div className="p-3 space-y-2 text-xs">
           <div className="flex items-center justify-between">
             <span className="text-white/70">Commander</span>
             <span className="font-semibold text-white font-display">{player.username}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-white/70">Factories</span>
+            <button
+              onClick={onFactoryManagementClick}
+              className="text-white font-bold font-display hover:text-accent-primary transition-colors cursor-pointer"
+              title="Click to manage factories"
+            >
+              {player.factoryCount || 0}
+            </button>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-white/70">Level</span>
@@ -178,10 +175,40 @@ export default function StatsPanel({ onClanClick }: StatsPanelProps = {}) {
             <span className="text-white/70">Rank</span>
             <span className="text-white font-bold font-display">{player.rank || 1}</span>
           </div>
-          <div className="flex items-center justify-between">
-            <span className="text-white/70">Factories</span>
-            <span className="text-white font-bold font-display">{player.factoryCount || 0}</span>
-          </div>
+          
+          {/* VIP Status */}
+          {player.vip && player.vipExpiration ? (
+            <div className="flex items-center justify-between group">
+              <span className="text-white/70 flex items-center gap-1.5">
+                <Zap className="w-3.5 h-3.5 text-yellow-400" />
+                VIP Status
+              </span>
+              <button
+                onClick={() => router.push('/game/vip-upgrade')}
+                className="flex items-center gap-1 text-yellow-400 hover:text-yellow-300 font-semibold transition-colors text-xs group-hover:underline"
+                title="Manage your VIP subscription"
+              >
+                <span className="inline-block bg-yellow-500/20 border border-yellow-500/50 px-2 py-0.5 rounded">
+                  👑 ACTIVE
+                </span>
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <span className="text-white/70 flex items-center gap-1.5">
+                <Zap className="w-3.5 h-3.5" />
+                VIP Status
+              </span>
+              <button
+                onClick={() => router.push('/game/vip-upgrade')}
+                className="text-purple-400 hover:text-purple-300 font-semibold transition-colors text-xs"
+                title="Upgrade to VIP for 2x speed and exclusive benefits"
+              >
+                Get VIP
+              </button>
+            </div>
+          )}
+          
           {/* Clan Row - Always show */}
           {player.clanId ? (
             <div className="flex items-center justify-between group">
@@ -223,6 +250,20 @@ export default function StatsPanel({ onClanClick }: StatsPanelProps = {}) {
               </button>
             </div>
           )}
+
+          {/* Referrals Row */}
+          <div className="flex items-center justify-between">
+            <span className="text-white/70 flex items-center gap-1.5">
+              🎁 Referrals
+            </span>
+            <button
+              onClick={onReferralsClick || (() => router.push('/referrals'))}
+              className="text-pink-400 hover:text-pink-300 font-semibold transition-colors text-xs"
+              title="Invite friends and earn rewards"
+            >
+              Invite Friends
+            </button>
+          </div>
         </div>
       </div>
 
@@ -395,6 +436,31 @@ export default function StatsPanel({ onClanClick }: StatsPanelProps = {}) {
         </div>
         {/* Content */}
         <div className="p-3 space-y-3 text-xs">
+          {/* VIP Status Indicator */}
+          {player.vip && player.vipExpiration && new Date(player.vipExpiration) > new Date() ? (
+            <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-2">
+              <div className="flex items-center gap-2">
+                <Zap className="w-3.5 h-3.5 text-yellow-400" />
+                <div>
+                  <p className="text-yellow-300 font-bold text-[11px]">⚡ VIP ACTIVE - 2x Multiplier</p>
+                  <p className="text-yellow-200/70 text-[10px]">All harvests receive double rewards</p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-gray-800/50 border border-gray-600/30 rounded-lg p-2">
+              <div className="flex items-center justify-between">
+                <p className="text-gray-400 text-[11px]">VIP Not Active</p>
+                <button
+                  onClick={() => router.push('/game/vip-upgrade')}
+                  className="text-purple-400 hover:text-purple-300 text-[10px] font-semibold transition-colors"
+                >
+                  Get VIP
+                </button>
+              </div>
+            </div>
+          )}
+          
           {/* Metal Breakdown */}
           <div>
             <div className="flex items-center gap-1.5 mb-2">
@@ -423,11 +489,38 @@ export default function StatsPanel({ onClanClick }: StatsPanelProps = {}) {
                   </span>
                 </div>
               )}
+              {player.vip && player.vipExpiration && new Date(player.vipExpiration) > new Date() && (
+                <div className="flex items-center justify-between">
+                  <span className="text-white/60 flex items-center gap-1">
+                    <Zap className="w-3 h-3 text-yellow-400" />
+                    VIP Multiplier
+                  </span>
+                  <span className="text-yellow-400 font-mono font-bold">
+                    ×2
+                  </span>
+                </div>
+              )}
+              {isPlayerFlagBearer && (
+                <div className="flex items-center justify-between">
+                  <span className="text-white/60 flex items-center gap-1">
+                    🚩 Flag Bearer
+                  </span>
+                  <span className="text-yellow-400 font-mono font-bold">
+                    +100%
+                  </span>
+                </div>
+              )}
               <div className="h-px bg-gradient-to-r from-transparent via-green-500/30 to-transparent my-1" />
               <div className="flex items-center justify-between">
                 <span className="text-white font-semibold">Expected Amount</span>
                 <span className="text-green-400 font-bold font-mono">
-                  {Math.round(1000 * (1 + ((player.gatheringBonus?.metalBonus || 0) / 100)) * (1 + totalShrineBonus)).toLocaleString()}
+                  {(() => {
+                    const hasVIP = player.vip && player.vipExpiration && new Date(player.vipExpiration) > new Date();
+                    let amount = 1000 * (1 + ((player.gatheringBonus?.metalBonus || 0) / 100)) * (1 + totalShrineBonus);
+                    if (hasVIP) amount *= 2;
+                    if (isPlayerFlagBearer) amount *= 2; // Flag bearer +100% = 2x multiplier
+                    return Math.round(amount).toLocaleString();
+                  })()}
                 </span>
               </div>
             </div>
@@ -463,11 +556,38 @@ export default function StatsPanel({ onClanClick }: StatsPanelProps = {}) {
                   </span>
                 </div>
               )}
+              {player.vip && player.vipExpiration && new Date(player.vipExpiration) > new Date() && (
+                <div className="flex items-center justify-between">
+                  <span className="text-white/60 flex items-center gap-1">
+                    <Zap className="w-3 h-3 text-yellow-400" />
+                    VIP Multiplier
+                  </span>
+                  <span className="text-yellow-400 font-mono font-bold">
+                    ×2
+                  </span>
+                </div>
+              )}
+              {isPlayerFlagBearer && (
+                <div className="flex items-center justify-between">
+                  <span className="text-white/60 flex items-center gap-1">
+                    🚩 Flag Bearer
+                  </span>
+                  <span className="text-yellow-400 font-mono font-bold">
+                    +100%
+                  </span>
+                </div>
+              )}
               <div className="h-px bg-gradient-to-r from-transparent via-green-500/30 to-transparent my-1" />
               <div className="flex items-center justify-between">
                 <span className="text-white font-semibold">Expected Amount</span>
                 <span className="text-green-400 font-bold font-mono">
-                  {Math.round(1000 * (1 + ((player.gatheringBonus?.energyBonus || 0) / 100)) * (1 + totalShrineBonus)).toLocaleString()}
+                  {(() => {
+                    const hasVIP = player.vip && player.vipExpiration && new Date(player.vipExpiration) > new Date();
+                    let amount = 1000 * (1 + ((player.gatheringBonus?.energyBonus || 0) / 100)) * (1 + totalShrineBonus);
+                    if (hasVIP) amount *= 2;
+                    if (isPlayerFlagBearer) amount *= 2; // Flag bearer +100% = 2x multiplier
+                    return Math.round(amount).toLocaleString();
+                  })()}
                 </span>
               </div>
             </div>
@@ -503,11 +623,45 @@ export default function StatsPanel({ onClanClick }: StatsPanelProps = {}) {
                   </span>
                 </div>
               )}
+              {player.vip && player.vipExpiration && new Date(player.vipExpiration) > new Date() && (
+                <div className="flex items-center justify-between">
+                  <span className="text-white/60 flex items-center gap-1">
+                    <Zap className="w-3 h-3 text-yellow-400" />
+                    VIP Multiplier
+                  </span>
+                  <span className="text-yellow-400 font-mono font-bold">
+                    ×2
+                  </span>
+                </div>
+              )}
+              {isPlayerFlagBearer && (
+                <div className="flex items-center justify-between">
+                  <span className="text-white/60 flex items-center gap-1">
+                    🚩 Flag Bearer
+                  </span>
+                  <span className="text-yellow-400 font-mono font-bold">
+                    +100%
+                  </span>
+                </div>
+              )}
               <div className="h-px bg-gradient-to-r from-transparent via-green-500/30 to-transparent my-1" />
               <div className="flex items-center justify-between">
                 <span className="text-white font-semibold">Expected Range</span>
                 <span className="text-green-400 font-bold font-mono text-[10px]">
-                  {Math.round(500 * (1 + ((player.gatheringBonus?.metalBonus || 0) / 100)) * (1 + totalShrineBonus)).toLocaleString()}-{Math.round(1500 * (1 + ((player.gatheringBonus?.metalBonus || 0) / 100)) * (1 + totalShrineBonus)).toLocaleString()}
+                  {(() => {
+                    const hasVIP = player.vip && player.vipExpiration && new Date(player.vipExpiration) > new Date();
+                    let minAmount = 500 * (1 + ((player.gatheringBonus?.metalBonus || 0) / 100)) * (1 + totalShrineBonus);
+                    let maxAmount = 1500 * (1 + ((player.gatheringBonus?.metalBonus || 0) / 100)) * (1 + totalShrineBonus);
+                    if (hasVIP) {
+                      minAmount *= 2;
+                      maxAmount *= 2;
+                    }
+                    if (isPlayerFlagBearer) {
+                      minAmount *= 2; // Flag bearer +100% = 2x multiplier
+                      maxAmount *= 2;
+                    }
+                    return `${Math.round(minAmount).toLocaleString()}-${Math.round(maxAmount).toLocaleString()}`;
+                  })()}
                 </span>
               </div>
             </div>

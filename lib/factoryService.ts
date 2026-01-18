@@ -1,18 +1,186 @@
 /**
  * @file lib/factoryService.ts
  * @created 2025-10-17
- * @overview Factory attack, control, and unit production business logic
+ * @updated 2025-11-04 - Phase 5: Added passive income system (hourly resource generation)
+ * @overview Factory attack, control, unit production, and passive income business logic
+ * 
+ * PASSIVE INCOME SYSTEM (NEW):
+ * - Hourly resource generation for factory owners
+ * - Metal/hour: factoryLevel × 1,000 (Level 1: 1K, Level 10: 10K)
+ * - Energy/hour: factoryLevel × 500 (Level 1: 500, Level 10: 5K)
+ * - Collection: collectAllFactoryIncome() calculates and awards accumulated resources
+ * - Tracking: lastResourceGeneration timestamp prevents retroactive income
+ * - Minimum interval: 1 minute (prevents spam collection)
  */
 
 import { getDatabase } from './mongodb';
 import { Factory, AttackResult, Unit, Position, UnitType } from '@/types';
 import { ObjectId } from 'mongodb';
 import { awardXP, XPAction } from './xpService';
+import { FACTORY_UPGRADE, getMaxSlots, getFactoryDefense } from './factoryUpgradeService';
 
 const ATTACK_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes between attacks
 const UNIT_COST_METAL = 100;
 const UNIT_COST_ENERGY = 50;
 const BASE_PLAYER_POWER = 100; // Base power for new players
+
+// PASSIVE INCOME CONSTANTS (NEW: Phase 5 - Factory Passive Income)
+const PASSIVE_INCOME_METAL_PER_LEVEL = 1000; // Level 1: 1K/hr, Level 10: 10K/hr
+const PASSIVE_INCOME_ENERGY_PER_LEVEL = 500;  // Level 1: 500/hr, Level 10: 5K/hr
+
+/**
+ * Calculate hourly passive income rate for a factory
+ * 
+ * @param factoryLevel - Current factory level (1-10)
+ * @returns Object with metal and energy per hour
+ * 
+ * @example
+ * getFactoryIncomeRate(1);  // Returns { metal: 1000, energy: 500 }
+ * getFactoryIncomeRate(10); // Returns { metal: 10000, energy: 5000 }
+ * 
+ * NEW: Phase 5 - Passive income rewards factory ownership
+ */
+export function getFactoryIncomeRate(factoryLevel: number): { metal: number; energy: number } {
+  return {
+    metal: factoryLevel * PASSIVE_INCOME_METAL_PER_LEVEL,
+    energy: factoryLevel * PASSIVE_INCOME_ENERGY_PER_LEVEL
+  };
+}
+
+/**
+ * Collect accumulated passive income from a factory
+ * Calculates resources generated since last collection based on factory level
+ * 
+ * @param factory - Factory to collect income from
+ * @returns Object with collected resources and updated timestamp
+ * 
+ * @example
+ * // Level 10 factory, 2 hours since last collection
+ * collectFactoryIncome(factory);
+ * // Returns: { metal: 20000, energy: 10000, hoursElapsed: 2 }
+ * 
+ * NEW: Phase 5 - Hourly resource generation for factory owners
+ */
+export function calculateFactoryIncome(factory: Factory): {
+  metal: number;
+  energy: number;
+  hoursElapsed: number;
+} {
+  // If no lastResourceGeneration, initialize to now (no retroactive income)
+  if (!factory.lastResourceGeneration) {
+    return { metal: 0, energy: 0, hoursElapsed: 0 };
+  }
+
+  // Calculate time elapsed since last collection
+  const now = new Date();
+  const lastCollection = new Date(factory.lastResourceGeneration);
+  const msElapsed = now.getTime() - lastCollection.getTime();
+  const hoursElapsed = msElapsed / (1000 * 60 * 60); // Convert ms to hours
+
+  // No income if less than 1 minute elapsed (prevents spam)
+  if (hoursElapsed < 0.0167) { // 1 minute = 0.0167 hours
+    return { metal: 0, energy: 0, hoursElapsed: 0 };
+  }
+
+  // Calculate income based on factory level and time elapsed
+  const hourlyRate = getFactoryIncomeRate(factory.level);
+  const metal = Math.floor(hourlyRate.metal * hoursElapsed);
+  const energy = Math.floor(hourlyRate.energy * hoursElapsed);
+
+  return { metal, energy, hoursElapsed };
+}
+
+/**
+ * Collect passive income from all player-owned factories
+ * Updates player resources and factory lastResourceGeneration timestamps
+ * 
+ * @param username - Player username
+ * @returns Object with total collected resources and factory count
+ * 
+ * @example
+ * await collectAllFactoryIncome('Player1');
+ * // Returns: { totalMetal: 25000, totalEnergy: 12500, factoriesCollected: 3 }
+ * 
+ * NEW: Phase 5 - Batch collection for all owned factories
+ */
+export async function collectAllFactoryIncome(username: string): Promise<{
+  totalMetal: number;
+  totalEnergy: number;
+  factoriesCollected: number;
+  factories: Array<{
+    position: { x: number; y: number };
+    level: number;
+    metal: number;
+    energy: number;
+    hoursElapsed: number;
+  }>;
+}> {
+  const db = await getDatabase();
+
+  // Get all factories owned by player
+  const factories = await db.collection('factories')
+    .find({ owner: username })
+    .toArray();
+
+  if (factories.length === 0) {
+    return {
+      totalMetal: 0,
+      totalEnergy: 0,
+      factoriesCollected: 0,
+      factories: []
+    };
+  }
+
+  let totalMetal = 0;
+  let totalEnergy = 0;
+  const factoryDetails = [];
+
+  // Calculate income for each factory
+  for (const factory of factories) {
+    const income = calculateFactoryIncome(factory as unknown as Factory);
+    
+    if (income.metal > 0 || income.energy > 0) {
+      totalMetal += income.metal;
+      totalEnergy += income.energy;
+
+      factoryDetails.push({
+        position: { x: factory.x, y: factory.y },
+        level: factory.level,
+        metal: income.metal,
+        energy: income.energy,
+        hoursElapsed: income.hoursElapsed
+      });
+
+      // Update factory's lastResourceGeneration timestamp
+      await db.collection('factories').updateOne(
+        { x: factory.x, y: factory.y },
+        { $set: { lastResourceGeneration: new Date() } }
+      );
+    }
+  }
+
+  // Award resources to player
+  if (totalMetal > 0 || totalEnergy > 0) {
+    await db.collection('players').updateOne(
+      { username },
+      {
+        $inc: {
+          'resources.metal': totalMetal,
+          'resources.energy': totalEnergy
+        }
+      }
+    );
+
+    console.log(`💰 ${username} collected passive income: ${totalMetal.toLocaleString()} Metal, ${totalEnergy.toLocaleString()} Energy from ${factoryDetails.length} factories`);
+  }
+
+  return {
+    totalMetal,
+    totalEnergy,
+    factoriesCollected: factoryDetails.length,
+    factories: factoryDetails
+  };
+}
 
 /**
  * Calculate player's total power for attack
@@ -55,16 +223,18 @@ export async function getFactoryData(x: number, y: number): Promise<Factory | nu
   
   // Create factory if it doesn't exist
   if (!factory) {
+    const level = 1; // All new factories start at Level 1
     const newFactory: Factory = {
       x,
       y,
       owner: null,
-      defense: 500 + Math.floor(Math.random() * 500), // 500-1000 defense
-      level: 1, // Factory level (starts at 1)
-      slots: 20,
+      defense: getFactoryDefense(level), // Level 1: 1,000 defense (exponential scaling)
+      level: level,
+      slots: getMaxSlots(level), // Level 1: 5,000 slots
       usedSlots: 0,
       productionRate: 1, // 1 unit per hour
       lastSlotRegen: new Date(), // Initialize with current time
+      lastResourceGeneration: new Date(), // NEW: Initialize passive income tracking
       lastAttackedBy: null,
       lastAttackTime: null
     };
@@ -110,6 +280,21 @@ export async function attackFactory(
     };
   }
   
+  // Enforce max factories per player before capture attempt
+  // If the player already controls the maximum allowed number of factories,
+  // block the capture and return a clear message. This ensures balance and
+  // prevents exceeding the strategic cap.
+  const ownedCount = await db.collection('factories').countDocuments({ owner: username });
+  if (ownedCount >= FACTORY_UPGRADE.MAX_FACTORIES_PER_PLAYER) {
+    return {
+      success: false,
+      message: `You already control ${ownedCount} factories (max ${FACTORY_UPGRADE.MAX_FACTORIES_PER_PLAYER}). Abandon one to capture another.`,
+      playerPower: 0,
+      factoryDefense: factory.defense,
+      captured: false
+    };
+  }
+  
   // Check cooldown
   if (factory.lastAttackedBy === username && factory.lastAttackTime) {
     const timeSinceLastAttack = Date.now() - new Date(factory.lastAttackTime).getTime();
@@ -140,7 +325,11 @@ export async function attackFactory(
       $set: {
         lastAttackedBy: username,
         lastAttackTime: new Date(),
-        ...(success ? { owner: username, usedSlots: 0 } : {})
+        ...(success ? { 
+          owner: username, 
+          usedSlots: 0,
+          lastResourceGeneration: new Date() // NEW: Initialize passive income on capture
+        } : {})
       }
     }
   );
@@ -286,12 +475,20 @@ export async function getPlayerUnitCount(username: string): Promise<number> {
 // IMPLEMENTATION NOTES:
 // ============================================================
 // - Attack cooldown prevents spam (5 minutes)
-// - Power calculation: base + rank bonus + unit bonus
+// - Power calculation: base + rank bonus + totalStrength + unit bonus
 // - Success chance capped at 90% for balance
 // - Unit production costs 100 Metal + 50 Energy
-// - Each factory has 20 slots maximum
-// - Units add 50 power each to player strength
-// - Factories have randomized defense (500-1000)
+// - Factories have exponential defense scaling:
+//   * Level 1: 1,000 defense (accessible)
+//   * Level 2+: (level-1)² × 50,000 (exponential)
+//   * Level 10: 4,050,000 defense (end-game challenge)
+// - PASSIVE INCOME SYSTEM (NEW: Phase 5):
+//   * Hourly generation: Level × 1,000 Metal, Level × 500 Energy
+//   * Level 1 factory: 1K metal/hr, 500 energy/hr
+//   * Level 10 factory: 10K metal/hr, 5K energy/hr
+//   * Collection: Automatic via collectAllFactoryIncome()
+//   * Tracking: lastResourceGeneration timestamp per factory
+//   * Minimum collection interval: 1 minute (prevents spam)
 // ============================================================
 // END OF FILE
 // ============================================================

@@ -367,9 +367,9 @@ export async function broadcastChatMessage(
   payload: ChatMessagePayload
 ): Promise<void> {
   try {
-    const roomName = WebSocketRooms.clanChat(payload.clanId);
+    const roomName = WebSocketRooms.chatChannel(payload.channelId);
     io.to(roomName).emit('chat:message', payload);
-    console.log(`[Broadcast] Chat message sent to clan ${payload.clanId}`);
+    console.log(`[Broadcast] Chat message sent to channel ${payload.channelId}`);
   } catch (error) {
     console.error(`[Broadcast] Failed to broadcast chat message:`, error);
   }
@@ -386,7 +386,7 @@ export async function broadcastTypingIndicator(
   payload: ChatTypingPayload
 ): Promise<void> {
   try {
-    const roomName = WebSocketRooms.clanChat(payload.clanId);
+    const roomName = WebSocketRooms.chatChannel(payload.channelId);
     io.to(roomName).emit('chat:typing', payload);
   } catch (error) {
     console.error(`[Broadcast] Failed to broadcast typing indicator:`, error);
@@ -404,7 +404,7 @@ export async function broadcastMemberOnlineStatus(
   payload: ChatMemberOnlinePayload
 ): Promise<void> {
   try {
-    const roomName = WebSocketRooms.clanChat(payload.clanId);
+    const roomName = WebSocketRooms.chatChannel(payload.channelId);
     io.to(roomName).emit('chat:member_online', payload);
   } catch (error) {
     console.error(`[Broadcast] Failed to broadcast member status:`, error);

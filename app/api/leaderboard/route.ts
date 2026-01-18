@@ -34,6 +34,17 @@ import {
 import { connectToDatabase } from '@/lib/mongodb';
 import { getCacheOrFetch, getCache, setCache } from '@/lib/cacheService';
 import { LeaderboardKeys, PlayerKeys, CacheTTL } from '@/lib/cacheKeys';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.leaderboard);
 
 /**
  * GET /api/leaderboard
@@ -42,7 +53,9 @@ import { LeaderboardKeys, PlayerKeys, CacheTTL } from '@/lib/cacheKeys';
  * Includes current player's rank and data regardless of position
  * No Redis dependency - uses in-memory caching only
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('leaderboard-get');
+  const endTimer = log.time('leaderboard-get');
   try {
     // Verify database connection
     await connectToDatabase();
@@ -153,43 +166,38 @@ export async function GET(request: NextRequest) {
     }
     
     // Build response
+    // Map effectivePower to combatPower for frontend consistency
+    const leaderboard = topPlayers.map(player => ({
+      ...player,
+      combatPower: player.effectivePower // Map for frontend compatibility
+    }));
+    
     const response = {
-      leaderboard: topPlayers,
+      leaderboard,
       currentPlayerRank,
-      currentPlayerData,
+      currentPlayerData: currentPlayerData ? {
+        ...currentPlayerData,
+        combatPower: currentPlayerData.effectivePower
+      } : null,
       totalPlayers,
       lastUpdated: new Date().toISOString()
     };
+
+    log.info('Leaderboard retrieved', { 
+      topPlayerCount: topPlayers.length,
+      totalPlayers,
+      requestedUsername: username || 'none'
+    });
     
     return NextResponse.json(response, { status: 200 });
     
   } catch (error) {
-    console.error('Error fetching leaderboard:', error);
-    
-    // Determine error type for appropriate response
-    if (error instanceof Error) {
-      // Database connection errors
-      if (error.message.includes('connect') || error.message.includes('database')) {
-        return NextResponse.json(
-          { error: 'Database connection failed. Please try again later.' },
-          { status: 503 }
-        );
-      }
-      
-      // Generic error with message
-      return NextResponse.json(
-        { error: `Failed to fetch leaderboard: ${error.message}` },
-        { status: 500 }
-      );
-    }
-    
-    // Unknown error
-    return NextResponse.json(
-      { error: 'An unexpected error occurred while fetching leaderboard data.' },
-      { status: 500 }
-    );
+    log.error('Error fetching leaderboard', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * IMPLEMENTATION NOTES:

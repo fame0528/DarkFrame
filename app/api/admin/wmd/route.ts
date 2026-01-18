@@ -47,6 +47,15 @@ import {
   getVotingPatterns,
   getBalanceMetrics,
 } from '@/lib/wmd/admin/wmdAnalyticsService';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 
 // ============================================================================
 // MIDDLEWARE & HELPERS
@@ -135,6 +144,8 @@ function parseDateRange(request: NextRequest): { start: Date; end: Date } {
   return { start, end };
 }
 
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
+
 // ============================================================================
 // GET ROUTES
 // ============================================================================
@@ -144,15 +155,15 @@ function parseDateRange(request: NextRequest): { start: Date; end: Date } {
  * 
  * Get comprehensive WMD system status
  */
-export async function GET(request: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin-wmd-get');
+  const endTimer = log.time('admin-wmd-get');
+
   try {
     // Verify admin access
     const auth = await verifyAdminAccess(request);
     if (!auth.isAdmin) {
-      return NextResponse.json(
-        { error: auth.error || 'Unauthorized' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, auth.error || 'Admin access required');
     }
 
     const { searchParams } = request.nextUrl;
@@ -165,54 +176,56 @@ export async function GET(request: NextRequest) {
       case 'analytics': {
         const { start, end } = parseDateRange(request);
         const analytics = await getGlobalWMDStats(db, start, end);
+        log.info('WMD analytics retrieved', { action, startDate: start, endDate: end });
         return NextResponse.json({ success: true, data: analytics });
       }
 
       case 'impacts': {
         const { start, end } = parseDateRange(request);
         const impacts = await getMissileImpactReport(db, start, end);
+        log.info('WMD impacts retrieved', { action, startDate: start, endDate: end });
         return NextResponse.json({ success: true, data: impacts });
       }
 
       case 'voting-patterns': {
         const { start, end } = parseDateRange(request);
         const patterns = await getVotingPatterns(db, start, end);
+        log.info('WMD voting patterns retrieved', { action, startDate: start, endDate: end });
         return NextResponse.json({ success: true, data: patterns });
       }
 
       case 'balance': {
         const { start, end } = parseDateRange(request);
         const balance = await getBalanceMetrics(db, start, end);
+        log.info('WMD balance metrics retrieved', { action, startDate: start, endDate: end });
         return NextResponse.json({ success: true, data: balance });
       }
 
       case 'clan-activity': {
         const clanId = searchParams.get('clanId');
         if (!clanId) {
-          return NextResponse.json(
-            { error: 'clanId parameter required' },
-            { status: 400 }
-          );
+          return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'clanId parameter required');
         }
         const { start, end } = parseDateRange(request);
         const activity = await getClanWMDActivity(db, clanId, start, end);
+        log.info('WMD clan activity retrieved', { action, clanId, startDate: start, endDate: end });
         return NextResponse.json({ success: true, data: activity });
       }
 
       default: {
         // Default: system status
         const status = await getWMDSystemStatus(db);
+        log.info('WMD system status retrieved', { action: 'status' });
         return NextResponse.json({ success: true, data: status });
       }
     }
   } catch (error) {
-    console.error('[WMD Admin API] GET error:', error);
-    return NextResponse.json(
-      { error: 'Internal server error', details: error instanceof Error ? error.message : 'Unknown error' },
-      { status: 500 }
-    );
+    log.error('WMD admin GET error', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================================
 // POST ROUTES
@@ -223,15 +236,15 @@ export async function GET(request: NextRequest) {
  * 
  * Handle admin actions (expire vote, disarm missile, adjust cooldown, flag activity)
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin-wmd-post');
+  const endTimer = log.time('admin-wmd-post');
+
   try {
     // Verify admin access
     const auth = await verifyAdminAccess(request);
     if (!auth.isAdmin) {
-      return NextResponse.json(
-        { error: auth.error || 'Unauthorized' },
-        { status: 401 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, auth.error || 'Admin access required');
     }
 
     const adminId = auth.userId || 'UNKNOWN_ADMIN';
@@ -239,10 +252,7 @@ export async function POST(request: NextRequest) {
     const { action } = body;
 
     if (!action) {
-      return NextResponse.json(
-        { error: 'Action parameter required' },
-        { status: 400 }
-      );
+      return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'Action parameter required');
     }
 
     const db = await connectToDatabase();
@@ -252,49 +262,40 @@ export async function POST(request: NextRequest) {
       case 'expire-vote': {
         const { voteId, reason } = body;
         if (!voteId || !reason) {
-          return NextResponse.json(
-            { error: 'voteId and reason required' },
-            { status: 400 }
-          );
+          return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'voteId and reason required');
         }
 
         const result = await forceExpireVote(db, voteId, adminId, reason);
+        log.info('WMD vote expired by admin', { action, voteId, adminId, success: result.success });
         return NextResponse.json(result, { status: result.success ? 200 : 400 });
       }
 
       case 'disarm-missile': {
         const { missileId, reason } = body;
         if (!missileId || !reason) {
-          return NextResponse.json(
-            { error: 'missileId and reason required' },
-            { status: 400 }
-          );
+          return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'missileId and reason required');
         }
 
         const result = await emergencyDisarmMissile(db, missileId, adminId, reason);
+        log.info('WMD missile disarmed by admin', { action, missileId, adminId, success: result.success });
         return NextResponse.json(result, { status: result.success ? 200 : 400 });
       }
 
       case 'adjust-cooldown': {
         const { clanId, adjustmentHours, reason } = body;
         if (!clanId || adjustmentHours === undefined || !reason) {
-          return NextResponse.json(
-            { error: 'clanId, adjustmentHours, and reason required' },
-            { status: 400 }
-          );
+          return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'clanId, adjustmentHours, and reason required');
         }
 
         const result = await adjustClanCooldown(db, clanId, adjustmentHours, adminId, reason);
+        log.info('WMD clan cooldown adjusted by admin', { action, clanId, adjustmentHours, adminId, success: result.success });
         return NextResponse.json(result, { status: result.success ? 200 : 400 });
       }
 
       case 'flag-activity': {
         const { playerId, clanId, activityType, details, evidence, severity } = body;
         if (!playerId || !clanId || !activityType || !details) {
-          return NextResponse.json(
-            { error: 'playerId, clanId, activityType, and details required' },
-            { status: 400 }
-          );
+          return createErrorResponse(ErrorCode.VALIDATION_MISSING_FIELD, 'playerId, clanId, activityType, and details required');
         }
 
         const result = await flagSuspiciousActivity(db, {
@@ -306,23 +307,21 @@ export async function POST(request: NextRequest) {
           severity: severity || 'MEDIUM',
         });
 
+        log.info('WMD suspicious activity flagged by admin', { action, playerId, clanId, activityType, severity, adminId, success: result.success });
         return NextResponse.json(result, { status: result.success ? 200 : 400 });
       }
 
       default:
-        return NextResponse.json(
-          { error: `Unknown action: ${action}` },
-          { status: 400 }
-        );
+        log.warn('Unknown WMD admin action', { action });
+        return createErrorResponse(ErrorCode.VALIDATION_INVALID_FORMAT, `Unknown action: ${action}`);
     }
   } catch (error) {
-    console.error('[WMD Admin API] POST error:', error);
-    return NextResponse.json(
-      { error: 'Internal server error', details: error instanceof Error ? error.message : 'Unknown error' },
-      { status: 500 }
-    );
+    log.error('WMD admin POST error', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * OPTIONS handler for CORS

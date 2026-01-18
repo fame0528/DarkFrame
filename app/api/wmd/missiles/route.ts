@@ -16,7 +16,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { connectToDatabase, getAuthenticatedPlayer } from '@/lib/wmd/apiHelpers';
+import { connectToDatabase } from '@/lib/mongodb';
+import { getAuthenticatedPlayer } from '@/lib/wmd/apiHelpers';
 import {
   createMissile,
   assembleComponent,
@@ -26,6 +27,21 @@ import {
 } from '@/lib/wmd/missileService';
 import { getIO } from '@/lib/websocket/server';
 import { wmdHandlers } from '@/lib/websocket/handlers';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createValidationErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+import { MissileOperationSchema } from '@/lib/validation/schemas';
+import { WarheadType, MissileComponent } from '@/types/wmd/missile.types';
+import { ZodError } from 'zod';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET /api/wmd/missiles
@@ -36,7 +52,7 @@ import { wmdHandlers } from '@/lib/websocket/handlers';
  */
 export async function GET(req: NextRequest) {
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
@@ -98,50 +114,56 @@ export async function GET(req: NextRequest) {
  * - component: string (for assemble)
  * - targetId: string (for launch)
  */
-export async function POST(req: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (req: NextRequest) => {
+  const log = createRouteLogger('WMDMissilesAPI');
+  const endTimer = log.time('POST /api/wmd/missiles');
+  
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      log.warn('Unauthorized WMD missile operation attempt');
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        context: 'WMD operations require authentication'
+      });
     }
     
-    const body = await req.json();
-    const { action } = body;
+    // Validate request body with discriminated union schema
+    const validated = MissileOperationSchema.parse(await req.json());
     
-    if (!action) {
-      return NextResponse.json(
-        { error: 'Missing required field: action' },
-        { status: 400 }
-      );
-    }
+    log.debug('WMD missile operation', {
+      action: validated.action,
+      playerId: auth.playerId,
+      username: auth.username,
+    });
     
     // Create new missile
-    if (action === 'create') {
-      const { warheadType } = body;
-      
-      if (!warheadType) {
-        return NextResponse.json(
-          { error: 'Missing required field: warheadType' },
-          { status: 400 }
-        );
-      }
+    if (validated.action === 'create') {
+      log.info('Creating missile', {
+        warheadType: validated.warheadType,
+        playerId: auth.playerId,
+        username: auth.username,
+      });
       
       const result = await createMissile(
         db,
         auth.playerId,
         auth.username,
         auth.player.clanId || '',
-        warheadType
+        validated.warheadType as WarheadType
       );
       
       if (!result.success) {
-        return NextResponse.json(
-          { error: result.message },
-          { status: 400 }
-        );
+        log.warn('Failed to create missile', {
+          details: { message: result.message, playerId: auth.playerId }
+        });
+        return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+          context: result.message || 'Failed to create missile'
+        });
       }
+      
+      log.info('Missile created successfully', { missileId: result.missileId });
       
       return NextResponse.json({
         success: true,
@@ -151,24 +173,38 @@ export async function POST(req: NextRequest) {
     }
     
     // Assemble component
-    if (action === 'assemble') {
-      const { missileId, component } = body;
+    if (validated.action === 'assemble') {
+      log.info('Assembling missile component', {
+        missileId: validated.missileId,
+        component: validated.component,
+        playerId: auth.playerId,
+      });
       
-      if (!missileId || !component) {
-        return NextResponse.json(
-          { error: 'Missing required fields: missileId, component' },
-          { status: 400 }
-        );
-      }
-      
-      const result = await assembleComponent(db, missileId, component, auth.playerId, auth.player.username || auth.player.email || 'Unknown');
+      const result = await assembleComponent(
+        db, 
+        validated.missileId, 
+        validated.component as MissileComponent, 
+        auth.playerId, 
+        auth.player.username || auth.player.email || 'Unknown'
+      );
       
       if (!result.success) {
-        return NextResponse.json(
-          { error: result.message },
-          { status: 400 }
-        );
+        log.warn('Failed to assemble component', {
+          details: {
+            message: result.message,
+            missileId: validated.missileId,
+            component: validated.component,
+          }
+        });
+        return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+          context: result.message || 'Failed to assemble component'
+        });
       }
+      
+      log.info('Component assembled successfully', {
+        missileId: validated.missileId,
+        component: validated.component,
+      });
       
       return NextResponse.json({
         success: true,
@@ -176,67 +212,77 @@ export async function POST(req: NextRequest) {
       });
     }
     
-    // Launch missile
-    if (action === 'launch') {
-      const { missileId, targetId } = body;
-      
-      if (!missileId || !targetId) {
-        return NextResponse.json(
-          { error: 'Missing required fields: missileId, targetId' },
-          { status: 400 }
-        );
-      }
-      
-      // Get target player name for broadcast
-      const targetPlayer = await db.collection('players').findOne({ playerId: targetId });
-      
-      const result = await launchMissile(db, missileId, targetId, auth.username);
-      
-      if (!result.success) {
-        return NextResponse.json(
-          { error: result.message },
-          { status: 400 }
-        );
-      }
-      
-      // Broadcast missile launch to launcher and target
-      try {
-        const missile = await db.collection('wmd_missiles').findOne({ missileId });
-        const io = getIO();
-        if (missile && io) {
-          await wmdHandlers.broadcastMissileLaunch(io, {
-            missileId,
-            launcherId: auth.playerId,
-            launcherName: auth.username,
-            targetId,
-            targetName: targetPlayer?.username || 'Unknown',
-            warheadType: missile.warheadType,
-            impactAt: missile.impactAt,
-          });
+    // Launch missile (validated.action === 'launch')
+    log.info('Launching missile', {
+      missileId: validated.missileId,
+      targetId: validated.targetId,
+      launcherId: auth.playerId,
+    });
+    
+    // Get target player name for broadcast
+    const targetPlayer = await db.collection('players').findOne({ playerId: validated.targetId });
+    
+    const result = await launchMissile(db, validated.missileId, validated.targetId, auth.username);
+    
+    if (!result.success) {
+      log.warn('Failed to launch missile', {
+        details: {
+          message: result.message,
+          missileId: validated.missileId,
+          targetId: validated.targetId,
         }
-      } catch (broadcastError) {
-        console.error('Failed to broadcast missile launch:', broadcastError);
-        // Continue execution - broadcast failure shouldn't fail the API
-      }
-      
-      return NextResponse.json({
-        success: true,
-        message: result.message,
+      });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        context: result.message || 'Failed to launch missile'
       });
     }
     
-    return NextResponse.json(
-      { error: 'Invalid action. Use "create", "assemble", or "launch"' },
-      { status: 400 }
-    );
+    // Broadcast missile launch to launcher and target
+    try {
+      const missile = await db.collection('wmd_missiles').findOne({ missileId: validated.missileId });
+      const io = getIO();
+      if (missile && io) {
+        await wmdHandlers.broadcastMissileLaunch(io, {
+          missileId: validated.missileId,
+          launcherId: auth.playerId,
+          launcherName: auth.username,
+          targetId: validated.targetId,
+          targetName: targetPlayer?.username || 'Unknown',
+          warheadType: missile.warheadType,
+          impactAt: missile.impactAt,
+        });
+        
+        log.info('Missile launch broadcasted', {
+          missileId: validated.missileId,
+          targetName: targetPlayer?.username || 'Unknown',
+        });
+      }
+    } catch (broadcastError) {
+      log.error('Failed to broadcast missile launch', broadcastError as Error);
+      // Continue execution - broadcast failure shouldn't fail the API
+    }
+    
+    log.info('Missile launched successfully', {
+      missileId: validated.missileId,
+      targetId: validated.targetId,
+    });
+    
+    return NextResponse.json({
+      success: true,
+      message: result.message,
+    });
   } catch (error) {
-    console.error('Error in missiles API:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      log.warn('Validation error in WMD missile operation');
+      return createValidationErrorResponse(error);
+    }
+    
+    log.error('Unexpected error in WMD missile operation', error as Error);
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * DELETE /api/wmd/missiles
@@ -247,7 +293,7 @@ export async function POST(req: NextRequest) {
  */
 export async function DELETE(req: NextRequest) {
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
@@ -285,3 +331,4 @@ export async function DELETE(req: NextRequest) {
     );
   }
 }
+

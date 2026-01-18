@@ -274,7 +274,8 @@ export default function UnitBuildPanel({
         <div className="bg-gray-700 p-3 rounded text-gray-300 text-sm">
           <p className="font-bold text-orange-400 mb-2">💡 Unit Building Tips:</p>
           <ul className="list-disc list-inside space-y-1">
-            <li>Slots regenerate at 1 slot/hour (max 10 slots)</li>
+            <li>Factory capacity increases with level (Level 1: 5,000 slots)</li>
+            <li>Slots regenerate over time based on factory level</li>
             <li>Offensive units (Rifleman, Scout) increase your STR</li>
             <li>Defensive units (Bunker, Barrier) increase your DEF</li>
             <li>Build quantities between 1-100 units at once</li>

@@ -9,7 +9,7 @@
  * applies gathering bonuses to final harvest amounts.
  */
 
-import { getCollection } from './mongodb';
+import { getCollection, getDatabase } from './mongodb';
 import { 
   Player, 
   Tile, 
@@ -263,8 +263,35 @@ export async function harvestResourceTile(
       }
     }
     
+    // Check VIP status for 2x resource multiplier
+    let vipMultiplier = 1;
+    if (player.vip && player.vipExpiration && new Date(player.vipExpiration) > new Date()) {
+      vipMultiplier = 2; // VIP gets 2x resources
+    }
+    
+    // Check Flag Bearer status for +100% bonus (2x multiplier)
+    let flagBearerMultiplier = 1;
+    let isPlayerFlagBearer = false;
+    try {
+      const db = await getDatabase();
+      const flagDoc = await db.collection('flags').findOne({});
+      if (flagDoc && flagDoc.currentHolder && flagDoc.currentHolder.username === playerId) {
+        flagBearerMultiplier = 2; // Flag bearer gets +100% = 2x resources
+        isPlayerFlagBearer = true;
+      }
+    } catch (error) {
+      console.error('❌ Error checking flag bearer status:', error);
+      // Don't fail harvest if flag check fails
+    }
+    
     // Calculate final amount with all bonuses (including shrine boosts)
     let finalAmount = calculateHarvestAmount(baseAmount, permanentBonus, temporaryBonus + shrineBonus);
+    
+    // Apply VIP multiplier
+    finalAmount = Math.floor(finalAmount * vipMultiplier);
+    
+    // Apply Flag Bearer multiplier
+    finalAmount = Math.floor(finalAmount * flagBearerMultiplier);
     
     // Apply balance penalty/bonus to gathering (if player has units)
     if (player.totalStrength || player.totalDefense) {
@@ -319,8 +346,16 @@ export async function harvestResourceTile(
     // Get updated player
     const updatedPlayer = await playersCollection.findOne({ username: playerId });
     
-    // Generate success message
-    const successMessage = getHarvestSuccessMessage(tile.terrain, finalAmount);
+    // Generate success message with VIP and Flag Bearer indicators
+    let successMessage = getHarvestSuccessMessage(tile.terrain, finalAmount);
+    if (vipMultiplier === 2) {
+      const baseHarvestAmount = Math.floor(finalAmount / (flagBearerMultiplier === 2 ? 4 : 2)); // Divide by 4 if both VIP and Flag, else 2
+      successMessage += ` ⚡ VIP 2x Boost! (+${baseHarvestAmount} bonus)`;
+    }
+    if (isPlayerFlagBearer) {
+      const baseHarvestAmount = Math.floor(finalAmount / (vipMultiplier === 2 ? 4 : 2)); // Divide by 4 if both VIP and Flag, else 2
+      successMessage += ` 🚩 Flag Bearer +100%! (+${baseHarvestAmount} bonus)`;
+    }
     
     const result: HarvestResult = {
       success: true,

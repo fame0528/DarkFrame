@@ -155,12 +155,38 @@ function calculateCombatStats(units: Unit[]): { totalSTR: number; totalDEF: numb
 }
 
 /**
- * Calculate damage dealt per round
+ * Calculate damage dealt per round with level gap protection
  * Attacker damage = max(5, AttackerSTR - DefenderDEF/2)
  * Defender damage = max(5, DefenderDEF - AttackerSTR/2)
+ * 
+ * LEVEL GAP PROTECTION:
+ * - If level difference > 20, damage is capped with progressive reduction
+ * - Reduction: 5% per level above 20 (e.g., 30-level gap = 50% damage)
+ * - Minimum damage: 25% of calculated damage (prevents complete immunity)
+ * - Preserves fairness for high-level vs. low-level matchups
+ * 
+ * @param attackerSTR - Attacker's total strength
+ * @param defenderDEF - Defender's total defense
+ * @param attackerLevel - Attacker's player level (for gap protection)
+ * @param defenderLevel - Defender's player level (for gap protection)
+ * @returns Damage per round (minimum 5)
  */
-function calculateDamage(attackerSTR: number, defenderDEF: number): number {
+function calculateDamage(
+  attackerSTR: number,
+  defenderDEF: number,
+  attackerLevel: number,
+  defenderLevel: number
+): number {
   const baseDamage = attackerSTR - defenderDEF / 2;
+  const levelGap = Math.abs(attackerLevel - defenderLevel);
+  
+  // Apply level gap protection if gap > 20 levels
+  if (levelGap > 20) {
+    const damageReduction = 1 - ((levelGap - 20) * 0.05); // -5% per level above 20
+    const cappedDamage = baseDamage * Math.max(0.25, damageReduction); // Min 25% damage
+    return Math.max(5, Math.floor(cappedDamage));
+  }
+  
   return Math.max(5, Math.floor(baseDamage)); // Minimum 5 damage per round
 }
 
@@ -200,6 +226,10 @@ function selectCapturedUnits(defeatedUnits: Unit[]): Unit[] {
  * @param defenderUnits - Defender's units
  * @param attackerName - Attacker username
  * @param defenderName - Defender username
+ * @param battleType - Type of battle (Infantry/Base/Factory)
+ * @param location - Battle location (optional)
+ * @param attackerLevel - Attacker's player level (for level gap protection)
+ * @param defenderLevel - Defender's player level (for level gap protection)
  * @returns Complete battle result with logs
  */
 export async function resolveBattle(
@@ -208,7 +238,9 @@ export async function resolveBattle(
   attackerName: string,
   defenderName: string,
   battleType: BattleType,
-  location?: { x: number; y: number }
+  location?: { x: number; y: number },
+  attackerLevel: number = 1,
+  defenderLevel: number = 1
 ): Promise<BattleLog> {
   // Calculate initial combat stats
   const attackerStats = calculateCombatStats(attackerUnits);
@@ -234,9 +266,9 @@ export async function resolveBattle(
   while (attackerHP > 0 && defenderHP > 0 && roundNumber < 100) {
     roundNumber++;
 
-    // Calculate damage for this round
-    const attackerDamage = calculateDamage(attackerStats.totalSTR, defenderStats.totalDEF);
-    const defenderDamage = calculateDamage(defenderStats.totalDEF, attackerStats.totalSTR);
+    // Calculate damage for this round WITH LEVEL GAP PROTECTION
+    const attackerDamage = calculateDamage(attackerStats.totalSTR, defenderStats.totalDEF, attackerLevel, defenderLevel);
+    const defenderDamage = calculateDamage(defenderStats.totalDEF, attackerStats.totalSTR, defenderLevel, attackerLevel);
 
     // Apply damage
     defenderHP = Math.max(0, defenderHP - attackerDamage);
@@ -383,13 +415,16 @@ export async function executeInfantryAttack(
   
   const defenderUnits = defenderPlayerUnits.flatMap(pu => playerUnitToUnits(pu, defenderId));
 
-  // Resolve battle
+  // Resolve battle WITH LEVEL GAP PROTECTION
   const battleLog = await resolveBattle(
     attackerUnits,
     defenderUnits,
     attackerId,
     defenderId,
-    BattleType.Infantry
+    BattleType.Infantry,
+    undefined,
+    attacker.level,
+    defender.level
   );
 
   // Apply battle results to database
@@ -529,14 +564,16 @@ export async function executeBaseAttack(
   const defenderPlayerUnits = defender.units;
   const defenderUnits = defenderPlayerUnits.flatMap(pu => playerUnitToUnits(pu, defenderId));
 
-  // Resolve battle at defender's base
+  // Resolve battle at defender's base WITH LEVEL GAP PROTECTION
   const battleLog = await resolveBattle(
     attackerUnits,
     defenderUnits,
     attackerId,
     defenderId,
     BattleType.Base,
-    defender.base
+    defender.base,
+    attacker.level,
+    defender.level
   );
 
   // If attacker wins, steal resources
@@ -802,7 +839,7 @@ function generateBattleMessage(battleLog: BattleLog): string {
 /**
  * Get recent battle logs for a player
  */
-export async function getPlayerBattleLogs(
+export async function getPlayerCombatHistory(
   username: string,
   limit: number = 10
 ): Promise<BattleLog[]> {

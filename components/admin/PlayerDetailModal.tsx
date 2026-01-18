@@ -17,6 +17,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { formatDateTime } from '@/utils/formatting';
 
 interface PlayerDetailModalProps {
   username: string;
@@ -258,11 +259,6 @@ export default function PlayerDetailModal({ username, onClose }: PlayerDetailMod
     return `${hours}h ${minutes}m`;
   };
 
-  // Format date
-  const formatDate = (date: Date | string) => {
-    return new Date(date).toLocaleString();
-  };
-
   return (
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
       <div className="bg-gray-900 rounded-lg border-2 border-purple-500 max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
@@ -344,9 +340,9 @@ export default function PlayerDetailModal({ username, onClose }: PlayerDetailMod
                   {playerData.createdAt && (
                     <div className="bg-gray-800 p-4 rounded-lg">
                       <h3 className="text-lg font-semibold text-gray-300 mb-3">Account Info</h3>
-                      <p className="text-gray-400">Created: {formatDate(playerData.createdAt)}</p>
+                      <p className="text-gray-400">Created: {formatDateTime(playerData.createdAt)}</p>
                       {playerData.lastActive && (
-                        <p className="text-gray-400">Last Active: {formatDate(playerData.lastActive)}</p>
+                        <p className="text-gray-400">Last Active: {formatDateTime(playerData.lastActive)}</p>
                       )}
                     </div>
                   )}
@@ -368,7 +364,7 @@ export default function PlayerDetailModal({ username, onClose }: PlayerDetailMod
                         <div className="flex justify-between items-start">
                           <div>
                             <p className="text-white font-semibold">{activity.actionType}</p>
-                            <p className="text-gray-400 text-sm">{formatDate(activity.timestamp)}</p>
+                            <p className="text-gray-400 text-sm">{formatDateTime(activity.timestamp.toISOString())}</p>
                           </div>
                           {activity.details && (
                             <p className="text-gray-500 text-sm">{JSON.stringify(activity.details)}</p>
@@ -393,9 +389,9 @@ export default function PlayerDetailModal({ username, onClose }: PlayerDetailMod
                   <div className="space-y-2">
                     {sessionData.sessions.map((session, idx) => (
                       <div key={idx} className="bg-gray-800 p-3 rounded">
-                        <p className="text-white">Started: {formatDate(session.startTime)}</p>
+                        <p className="text-white">Started: {formatDateTime(session.startTime.toISOString())}</p>
                         {session.endTime && (
-                          <p className="text-gray-400">Ended: {formatDate(session.endTime)}</p>
+                          <p className="text-gray-400">Ended: {formatDateTime(session.endTime.toISOString())}</p>
                         )}
                         <p className="text-gray-400">Duration: {formatDuration(session.duration)}</p>
                         <p className="text-gray-400">Actions: {session.actionsPerformed}</p>
@@ -445,7 +441,7 @@ export default function PlayerDetailModal({ username, onClose }: PlayerDetailMod
                               }`}>
                                 {flag.severity}
                               </p>
-                              <p className="text-gray-400 text-sm">{formatDate(flag.timestamp)}</p>
+                              <p className="text-gray-400 text-sm">{formatDateTime(flag.timestamp.toISOString())}</p>
                             </div>
                             <p className="text-gray-500 text-sm">{flag.details}</p>
                           </div>
@@ -552,3 +548,4 @@ export default function PlayerDetailModal({ username, onClose }: PlayerDetailMod
  * - View achievements
  * - Export player data as JSON
  */
+

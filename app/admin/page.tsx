@@ -87,7 +87,6 @@ export default function AdminPage({ embedded = false }: AdminPageProps = {}) {
   const [botConfig, setBotConfig] = useState({
     totalBotCap: 1000,
     dailySpawnCount: 75,
-    beerBasePercent: 0.07,
     migrationPercent: 0.30,
     regenRates: {
       hoarder: 0.05,
@@ -98,6 +97,56 @@ export default function AdminPage({ embedded = false }: AdminPageProps = {}) {
     }
   });
   const [botActionLoading, setBotActionLoading] = useState(false);
+  
+  // Beer Base smart spawning state
+  const [beerBaseConfig, setBeerBaseConfig] = useState({
+    enabled: true,
+    spawnRateMin: 5,
+    spawnRateMax: 10,
+    resourceMultiplier: 3,
+    respawnDay: 0, // 0 = Sunday
+    respawnHour: 4, // 4 AM
+    
+    // Variety enforcement settings (FID-20251025-001)
+    varietyEnabled: true,
+    minWeakPercent: 15,
+    minMediumPercent: 20,
+    minStrongPercent: 15,
+    minElitePercent: 10,
+    maxSameTierPercent: 60,
+    
+    // Dynamic schedules settings (FID-20251025-003)
+    schedulesEnabled: false,
+    
+    // Predictive spawning settings (FID-20251025-002)
+    usePredictiveSpawning: false, // Use current player levels by default
+    predictiveWeeksAhead: 2, // Project 2 weeks ahead when enabled
+    predictiveExpanded: false, // UI state for collapsible section
+  });
+  const [beerBaseLoading, setBeerBaseLoading] = useState(false);
+  
+  // Schedule management state (FID-20251025-003)
+  const [schedules, setSchedules] = useState<any[]>([]);
+  const [schedulesLoading, setSchedulesLoading] = useState(false);
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState<any | null>(null);
+  const [scheduleForm, setScheduleForm] = useState({
+    enabled: true,
+    dayOfWeek: 0,
+    hour: 4,
+    spawnPercentage: 100,
+    timezone: 'America/New_York',
+    name: ''
+  });
+  
+  // Beer Base Analytics state (FID-20251025-004)
+  const [beerAnalyticsExpanded, setBeerAnalyticsExpanded] = useState(false);
+  const [beerAnalyticsPeriod, setBeerAnalyticsPeriod] = useState<'7d' | '14d' | '30d' | '90d' | '365d'>('30d');
+  const [beerSpawnStats, setBeerSpawnStats] = useState<any>(null);
+  const [beerDefeatStats, setBeerDefeatStats] = useState<any>(null);
+  const [beerEffectivenessStats, setBeerEffectivenessStats] = useState<any>(null);
+  const [beerAnalyticsLoading, setBeerAnalyticsLoading] = useState(false);
+  const [beerAnalyticsError, setBeerAnalyticsError] = useState<string | null>(null);
   
   // Analytics state
   const [analyticsPeriod, setAnalyticsPeriod] = useState<'24h' | '7d' | '30d'>('7d');
@@ -150,17 +199,19 @@ export default function AdminPage({ embedded = false }: AdminPageProps = {}) {
     const loadStats = async () => {
       setLoading(true);
       try {
-        const [statsRes, playersRes, botStatsRes, botConfigRes] = await Promise.all([
+        const [statsRes, playersRes, botStatsRes, botConfigRes, beerBaseConfigRes] = await Promise.all([
           fetch('/api/admin/stats'),
           fetch('/api/admin/players'),
           fetch('/api/admin/bot-stats'),
-          fetch('/api/admin/bot-config')
+          fetch('/api/admin/bot-config'),
+          fetch('/api/admin/beer-bases/config')
         ]);
 
         const statsData = await statsRes.json();
         const playersData = await playersRes.json();
         const botStatsData = await botStatsRes.json();
         const botConfigData = await botConfigRes.json();
+        const beerBaseConfigData = await beerBaseConfigRes.json();
 
         if (statsData.success) {
           setStats(statsData.data);
@@ -179,6 +230,39 @@ export default function AdminPage({ embedded = false }: AdminPageProps = {}) {
             ...prev,
             ...botConfigData.data
           }));
+        }
+        
+        if (beerBaseConfigData.success) {
+          const config = beerBaseConfigData.config;
+          setBeerBaseConfig({
+            enabled: config.enabled ?? true,
+            spawnRateMin: config.spawnRateMin ?? 5,
+            spawnRateMax: config.spawnRateMax ?? 10,
+            resourceMultiplier: config.resourceMultiplier ?? 3,
+            respawnDay: config.respawnDay ?? 0,
+            respawnHour: config.respawnHour ?? 4,
+            
+            // Variety settings (FID-20251025-001)
+            varietyEnabled: config.varietyEnabled ?? true,
+            minWeakPercent: config.minWeakPercent ?? 15,
+            minMediumPercent: config.minMediumPercent ?? 20,
+            minStrongPercent: config.minStrongPercent ?? 15,
+            minElitePercent: config.minElitePercent ?? 10,
+            maxSameTierPercent: config.maxSameTierPercent ?? 60,
+            
+            // Dynamic schedules (FID-20251025-003)
+            schedulesEnabled: config.schedulesEnabled ?? false,
+            
+            // Predictive spawning (FID-20251025-002)
+            usePredictiveSpawning: config.usePredictiveSpawning ?? false,
+            predictiveWeeksAhead: config.predictiveWeeksAhead ?? 2,
+            predictiveExpanded: false, // UI state (not from backend)
+          });
+          
+          // Load schedules if available
+          if (config.schedules) {
+            setSchedules(config.schedules);
+          }
         }
 
         // Load WMD status
@@ -306,7 +390,7 @@ export default function AdminPage({ embedded = false }: AdminPageProps = {}) {
   };
   
   const handleRespawnBeerBases = async () => {
-    setBotActionLoading(true);
+    setBeerBaseLoading(true);
     try {
       const res = await fetch('/api/admin/beer-bases/respawn', {
         method: 'POST',
@@ -315,7 +399,13 @@ export default function AdminPage({ embedded = false }: AdminPageProps = {}) {
       
       const data = await res.json();
       if (data.success) {
-        alert(`Beer bases respawned! ${data.count} bases created.`);
+        alert(`Beer bases respawned! ${data.count} bases created using smart spawning.`);
+        // Refresh bot stats
+        const botStatsRes = await fetch('/api/admin/bot-stats');
+        const botStatsData = await botStatsRes.json();
+        if (botStatsData.success) {
+          setBotStats(botStatsData.data);
+        }
       } else {
         alert(`Error: ${data.error}`);
       }
@@ -323,9 +413,249 @@ export default function AdminPage({ embedded = false }: AdminPageProps = {}) {
       console.error('Beer base respawn error:', err);
       alert('Failed to respawn beer bases');
     } finally {
-      setBotActionLoading(false);
+      setBeerBaseLoading(false);
     }
   };
+  
+  const handleSaveBeerBaseConfig = async () => {
+    setBeerBaseLoading(true);
+    try {
+      const res = await fetch('/api/admin/beer-bases/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: beerBaseConfig.enabled,
+          spawnRateMin: beerBaseConfig.spawnRateMin / 100,
+          spawnRateMax: beerBaseConfig.spawnRateMax / 100,
+          resourceMultiplier: beerBaseConfig.resourceMultiplier,
+          respawnDay: beerBaseConfig.respawnDay,
+          respawnHour: beerBaseConfig.respawnHour,
+          
+          // Variety settings (FID-20251025-001)
+          varietyEnabled: beerBaseConfig.varietyEnabled,
+          minWeakPercent: beerBaseConfig.minWeakPercent,
+          minMediumPercent: beerBaseConfig.minMediumPercent,
+          minStrongPercent: beerBaseConfig.minStrongPercent,
+          minElitePercent: beerBaseConfig.minElitePercent,
+          maxSameTierPercent: beerBaseConfig.maxSameTierPercent,
+          
+          // Dynamic schedules (FID-20251025-003)
+          schedulesEnabled: beerBaseConfig.schedulesEnabled,
+          
+          // Predictive spawning (FID-20251025-002)
+          usePredictiveSpawning: beerBaseConfig.usePredictiveSpawning,
+          predictiveWeeksAhead: beerBaseConfig.predictiveWeeksAhead,
+        })
+      });
+      
+      const data = await res.json();
+      if (data.success) {
+        alert('Beer Base configuration saved successfully!');
+      } else {
+        alert(`Error: ${data.error}`);
+      }
+    } catch (err) {
+      console.error('Beer Base config save error:', err);
+      alert('Failed to save Beer Base configuration');
+    } finally {
+      setBeerBaseLoading(false);
+    }
+  };
+  
+  // Schedule management functions (FID-20251025-003)
+  const loadSchedules = async () => {
+    setSchedulesLoading(true);
+    try {
+      const res = await fetch('/api/admin/beer-bases/schedules');
+      const data = await res.json();
+      if (data.success) {
+        setSchedules(data.schedules || []);
+      }
+    } catch (err) {
+      console.error('Failed to load schedules:', err);
+    } finally {
+      setSchedulesLoading(false);
+    }
+  };
+  
+  const handleSaveSchedule = async () => {
+    setSchedulesLoading(true);
+    try {
+      const method = editingSchedule ? 'PUT' : 'POST';
+      const body = editingSchedule 
+        ? { id: editingSchedule.id, ...scheduleForm }
+        : scheduleForm;
+      
+      const res = await fetch('/api/admin/beer-bases/schedules', {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      
+      const data = await res.json();
+      if (data.success) {
+        alert(editingSchedule ? 'Schedule updated!' : 'Schedule created!');
+        setShowScheduleModal(false);
+        setEditingSchedule(null);
+        setScheduleForm({
+          enabled: true,
+          dayOfWeek: 0,
+          hour: 4,
+          spawnPercentage: 100,
+          timezone: 'America/New_York',
+          name: ''
+        });
+        await loadSchedules();
+      } else {
+        alert(`Error: ${data.error}`);
+      }
+    } catch (err) {
+      console.error('Schedule save error:', err);
+      alert('Failed to save schedule');
+    } finally {
+      setSchedulesLoading(false);
+    }
+  };
+  
+  const handleDeleteSchedule = async (id: string) => {
+    if (!confirm('Delete this schedule?')) return;
+    
+    setSchedulesLoading(true);
+    try {
+      const res = await fetch(`/api/admin/beer-bases/schedules?id=${id}`, {
+        method: 'DELETE'
+      });
+      
+      const data = await res.json();
+      if (data.success) {
+        alert('Schedule deleted!');
+        await loadSchedules();
+      } else {
+        alert(`Error: ${data.error}`);
+      }
+    } catch (err) {
+      console.error('Schedule delete error:', err);
+      alert('Failed to delete schedule');
+    } finally {
+      setSchedulesLoading(false);
+    }
+  };
+  
+  const handleToggleSchedule = async (schedule: any) => {
+    setSchedulesLoading(true);
+    try {
+      const res = await fetch('/api/admin/beer-bases/schedules', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: schedule.id,
+          enabled: !schedule.enabled
+        })
+      });
+      
+      const data = await res.json();
+      if (data.success) {
+        await loadSchedules();
+      } else {
+        alert(`Error: ${data.error}`);
+      }
+    } catch (err) {
+      console.error('Schedule toggle error:', err);
+      alert('Failed to toggle schedule');
+    } finally {
+      setSchedulesLoading(false);
+    }
+  };
+  
+  const handleEditSchedule = (schedule: any) => {
+    setEditingSchedule(schedule);
+    setScheduleForm({
+      enabled: schedule.enabled,
+      dayOfWeek: schedule.dayOfWeek,
+      hour: schedule.hour,
+      spawnPercentage: schedule.spawnPercentage,
+      timezone: schedule.timezone,
+      name: schedule.name || ''
+    });
+    setShowScheduleModal(true);
+  };
+  
+  // Load schedules when dynamic schedules are enabled
+  useEffect(() => {
+    if (beerBaseConfig.schedulesEnabled) {
+      loadSchedules();
+    }
+  }, [beerBaseConfig.schedulesEnabled]);
+  
+  // Load Beer Base analytics (FID-20251025-004)
+  const loadBeerBaseAnalytics = async () => {
+    setBeerAnalyticsLoading(true);
+    setBeerAnalyticsError(null);
+    
+    try {
+      const endDate = new Date();
+      const startDate = new Date();
+      
+      // Calculate start date based on period
+      switch (beerAnalyticsPeriod) {
+        case '7d':
+          startDate.setDate(endDate.getDate() - 7);
+          break;
+        case '14d':
+          startDate.setDate(endDate.getDate() - 14);
+          break;
+        case '30d':
+          startDate.setDate(endDate.getDate() - 30);
+          break;
+        case '90d':
+          startDate.setDate(endDate.getDate() - 90);
+          break;
+        case '365d':
+          startDate.setDate(endDate.getDate() - 365);
+          break;
+      }
+      
+      const startStr = startDate.toISOString();
+      const endStr = endDate.toISOString();
+      
+      const [spawnRes, defeatRes, effectivenessRes] = await Promise.all([
+        fetch(`/api/admin/beer-bases/analytics/spawn-stats?startDate=${startStr}&endDate=${endStr}`),
+        fetch(`/api/admin/beer-bases/analytics/defeat-stats?startDate=${startStr}&endDate=${endStr}`),
+        fetch(`/api/admin/beer-bases/analytics/effectiveness?startDate=${startStr}&endDate=${endStr}`)
+      ]);
+      
+      const [spawnData, defeatData, effectivenessData] = await Promise.all([
+        spawnRes.json(),
+        defeatRes.json(),
+        effectivenessRes.json()
+      ]);
+      
+      if (spawnData.success) {
+        setBeerSpawnStats(spawnData.data);
+      }
+      
+      if (defeatData.success) {
+        setBeerDefeatStats(defeatData.data);
+      }
+      
+      if (effectivenessData.success) {
+        setBeerEffectivenessStats(effectivenessData.data);
+      }
+      
+    } catch (err) {
+      console.error('Failed to load Beer Base analytics:', err);
+      setBeerAnalyticsError(err instanceof Error ? err.message : 'Failed to load analytics');
+    } finally {
+      setBeerAnalyticsLoading(false);
+    }
+  };
+  
+  // Load analytics when period changes or panel expands
+  useEffect(() => {
+    if (beerAnalyticsExpanded && player?.isAdmin) {
+      loadBeerBaseAnalytics();
+    }
+  }, [beerAnalyticsPeriod, beerAnalyticsExpanded, player?.isAdmin]);
   
   const handleSaveConfig = async () => {
     setBotActionLoading(true);
@@ -864,7 +1194,7 @@ Regen Cycle: ${botStats.lastRegenCycle || 'Never'}
                         <td className="px-4 py-3 text-white font-medium">{user.username}</td>
                         <td className="px-4 py-3 text-gray-400 text-sm">{user.email || 'N/A'}</td>
                         <td className="px-4 py-3">
-                          {user.isVIP ? (
+                          {user.vip ? (
                             <span className="inline-block bg-gradient-to-r from-yellow-400 to-orange-500 text-black px-3 py-1 rounded-full text-xs font-bold">
                               ⚡ VIP
                             </span>
@@ -875,8 +1205,8 @@ Regen Cycle: ${botStats.lastRegenCycle || 'Never'}
                           )}
                         </td>
                         <td className="px-4 py-3 text-gray-400 text-sm">
-                          {user.isVIP && user.vipExpiresAt 
-                            ? new Date(user.vipExpiresAt).toLocaleDateString('en-US', {
+                          {user.vip && user.vipExpiration 
+                            ? new Date(user.vipExpiration).toLocaleDateString('en-US', {
                                 year: 'numeric',
                                 month: 'short',
                                 day: 'numeric',
@@ -887,7 +1217,7 @@ Regen Cycle: ${botStats.lastRegenCycle || 'Never'}
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex gap-2">
-                            {!user.isVIP ? (
+                            {!user.vip ? (
                               <>
                                 <button
                                   onClick={() => handleGrantVip(user.username, 7)}
@@ -1125,7 +1455,7 @@ Regen Cycle: ${botStats.lastRegenCycle || 'Never'}
                 {/* Quick Actions */}
                 <div className="bg-gray-900 rounded-lg p-4">
                   <h3 className="text-lg font-semibold text-cyan-300 mb-3">Quick Actions</h3>
-                  <div className="grid grid-cols-4 gap-3">
+                  <div className="grid grid-cols-3 gap-3">
                     <button 
                       onClick={handleSpawn10Bots}
                       disabled={botActionLoading}
@@ -1141,19 +1471,14 @@ Regen Cycle: ${botStats.lastRegenCycle || 'Never'}
                       🔄 Run Regen Cycle
                     </button>
                     <button 
-                      onClick={handleRespawnBeerBases}
-                      disabled={botActionLoading}
-                      className="bg-yellow-600 hover:bg-yellow-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-3 rounded-lg font-semibold transition-colors text-sm"
-                    >
-                      🍺 Respawn Beer Bases
-                    </button>
-                    <button 
                       onClick={handleBotAnalytics}
                       disabled={botActionLoading}
                       className="bg-purple-600 hover:bg-purple-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-3 rounded-lg font-semibold transition-colors text-sm"
                     >
                       📊 Bot Analytics
                     </button>
+                  </div>
+                  <div className="grid grid-cols-5 gap-3 mt-3">
                     <button 
                       onClick={() => setShowWebSocketConsole(true)}
                       className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-3 rounded-lg font-semibold transition-colors text-sm"
@@ -1210,22 +1535,12 @@ Regen Cycle: ${botStats.lastRegenCycle || 'Never'}
                       />
                     </div>
                     <div className="space-y-2">
-                      <label className="text-sm text-gray-400">Beer Base % (0-1)</label>
+                      <label className="text-sm text-gray-400">Migration % (0-100)</label>
                       <input 
                         type="number" 
-                        step="0.01"
-                        value={botConfig.beerBasePercent}
-                        onChange={(e) => setBotConfig({...botConfig, beerBasePercent: parseFloat(e.target.value) || 0})}
-                        className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm text-gray-400">Migration % (0-1)</label>
-                      <input 
-                        type="number" 
-                        step="0.01"
-                        value={botConfig.migrationPercent}
-                        onChange={(e) => setBotConfig({...botConfig, migrationPercent: parseFloat(e.target.value) || 0})}
+                        step="1"
+                        value={Math.round(botConfig.migrationPercent * 100)}
+                        onChange={(e) => setBotConfig({...botConfig, migrationPercent: (parseInt(e.target.value) || 0) / 100})}
                         className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white"
                       />
                     </div>
@@ -1309,6 +1624,764 @@ Regen Cycle: ${botStats.lastRegenCycle || 'Never'}
                       />
                     </div>
                   </div>
+                </div>
+
+                {/* Beer Base Smart Spawning */}
+                <div className="bg-gray-900 rounded-lg p-4 border-2 border-yellow-500/30">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-lg font-semibold text-yellow-300 flex items-center gap-2">
+                      <span>🍺</span>
+                      <span>Beer Base Smart Spawning</span>
+                      <span className="text-xs bg-green-600 px-2 py-1 rounded">AUTO</span>
+                    </h3>
+                    <div className="text-xs text-gray-400">
+                      Current: {botStats?.beerBases || 0} active
+                    </div>
+                  </div>
+                  
+                  <div className="bg-yellow-900/20 border border-yellow-500/30 rounded p-3 mb-4">
+                    <p className="text-xs text-yellow-300">
+                      🤖 <strong>Smart System Active:</strong> Beer Bases automatically spawn based on player levels. 
+                      System analyzes active players and spawns appropriate difficulty targets.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-sm text-gray-400 flex items-center gap-2">
+                        Enable System
+                        <span className="text-xs text-gray-500">(Master switch)</span>
+                      </label>
+                      <select 
+                        value={beerBaseConfig.enabled ? 'true' : 'false'}
+                        onChange={(e) => setBeerBaseConfig({...beerBaseConfig, enabled: e.target.value === 'true'})}
+                        className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white"
+                      >
+                        <option value="true">✅ Enabled</option>
+                        <option value="false">❌ Disabled</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm text-gray-400 flex items-center gap-2">
+                        Spawn Rate Min %
+                        <span className="text-xs text-gray-500">(of bots)</span>
+                      </label>
+                      <input 
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={beerBaseConfig.spawnRateMin}
+                        onChange={(e) => setBeerBaseConfig({...beerBaseConfig, spawnRateMin: parseInt(e.target.value) || 0})}
+                        className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm text-gray-400 flex items-center gap-2">
+                        Spawn Rate Max %
+                        <span className="text-xs text-gray-500">(of bots)</span>
+                      </label>
+                      <input 
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={beerBaseConfig.spawnRateMax}
+                        onChange={(e) => setBeerBaseConfig({...beerBaseConfig, spawnRateMax: parseInt(e.target.value) || 0})}
+                        className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm text-gray-400 flex items-center gap-2">
+                        Resource Multiplier
+                        <span className="text-xs text-gray-500">(1-20x)</span>
+                      </label>
+                      <input 
+                        type="number"
+                        min="1"
+                        max="20"
+                        value={beerBaseConfig.resourceMultiplier}
+                        onChange={(e) => setBeerBaseConfig({...beerBaseConfig, resourceMultiplier: parseInt(e.target.value) || 1})}
+                        className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm text-gray-400">Weekly Respawn Day</label>
+                      <select 
+                        value={beerBaseConfig.respawnDay}
+                        onChange={(e) => setBeerBaseConfig({...beerBaseConfig, respawnDay: parseInt(e.target.value)})}
+                        className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white"
+                      >
+                        <option value="0">Sunday</option>
+                        <option value="1">Monday</option>
+                        <option value="2">Tuesday</option>
+                        <option value="3">Wednesday</option>
+                        <option value="4">Thursday</option>
+                        <option value="5">Friday</option>
+                        <option value="6">Saturday</option>
+                      </select>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm text-gray-400">Respawn Hour (0-23)</label>
+                      <input 
+                        type="number"
+                        min="0"
+                        max="23"
+                        value={beerBaseConfig.respawnHour}
+                        onChange={(e) => setBeerBaseConfig({...beerBaseConfig, respawnHour: parseInt(e.target.value) || 0})}
+                        className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-white"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Variety Enforcement Settings (FID-20251025-001) */}
+                  <div className="mt-4 bg-yellow-900/10 border border-yellow-500/20 rounded-lg p-3">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-sm font-semibold text-yellow-200 flex items-center gap-2">
+                        🎨 Variety Enforcement
+                        <span className="text-xs text-gray-400">(Prevents homogeneous spawns)</span>
+                      </h4>
+                      <select 
+                        value={beerBaseConfig.varietyEnabled ? 'true' : 'false'}
+                        onChange={(e) => setBeerBaseConfig({...beerBaseConfig, varietyEnabled: e.target.value === 'true'})}
+                        className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs"
+                      >
+                        <option value="true">✅ Enabled</option>
+                        <option value="false">❌ Disabled</option>
+                      </select>
+                    </div>
+                    
+                    {beerBaseConfig.varietyEnabled && (
+                      <>
+                        <p className="text-xs text-gray-400 mb-3">
+                          Ensures minimum variety across all power tiers even when player base is homogeneous. 
+                          Example: If all players are Level 15, variety prevents 100% Mid-tier spawns.
+                        </p>
+                        
+                        <div className="grid grid-cols-5 gap-3">
+                          <div className="space-y-1">
+                            <label className="text-xs text-gray-400">Min WEAK %</label>
+                            <input 
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={beerBaseConfig.minWeakPercent}
+                              onChange={(e) => setBeerBaseConfig({...beerBaseConfig, minWeakPercent: parseInt(e.target.value) || 0})}
+                              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-xs text-gray-400">Min MEDIUM %</label>
+                            <input 
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={beerBaseConfig.minMediumPercent}
+                              onChange={(e) => setBeerBaseConfig({...beerBaseConfig, minMediumPercent: parseInt(e.target.value) || 0})}
+                              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-xs text-gray-400">Min STRONG %</label>
+                            <input 
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={beerBaseConfig.minStrongPercent}
+                              onChange={(e) => setBeerBaseConfig({...beerBaseConfig, minStrongPercent: parseInt(e.target.value) || 0})}
+                              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-xs text-gray-400">Min ELITE %</label>
+                            <input 
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={beerBaseConfig.minElitePercent}
+                              onChange={(e) => setBeerBaseConfig({...beerBaseConfig, minElitePercent: parseInt(e.target.value) || 0})}
+                              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-xs text-gray-400">Max Same Tier %</label>
+                            <input 
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={beerBaseConfig.maxSameTierPercent}
+                              onChange={(e) => setBeerBaseConfig({...beerBaseConfig, maxSameTierPercent: parseInt(e.target.value) || 0})}
+                              className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-sm"
+                            />
+                          </div>
+                        </div>
+                        
+                        <div className="mt-2 text-xs text-gray-500">
+                          <strong>Current totals:</strong> Min {beerBaseConfig.minWeakPercent + beerBaseConfig.minMediumPercent + beerBaseConfig.minStrongPercent + beerBaseConfig.minElitePercent}% guaranteed variety
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Dynamic Schedules (FID-20251025-003) */}
+                  <div className="mt-4 bg-blue-900/10 border border-blue-500/20 rounded-lg p-3">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-sm font-semibold text-blue-200 flex items-center gap-2">
+                        📅 Dynamic Respawn Schedules
+                        <span className="text-xs text-gray-400">(Multiple respawn times)</span>
+                      </h4>
+                      <select 
+                        value={beerBaseConfig.schedulesEnabled ? 'true' : 'false'}
+                        onChange={(e) => setBeerBaseConfig({...beerBaseConfig, schedulesEnabled: e.target.value === 'true'})}
+                        className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs"
+                      >
+                        <option value="false">🕐 Legacy Single Schedule</option>
+                        <option value="true">✅ Dynamic Schedules</option>
+                      </select>
+                    </div>
+                    
+                    {beerBaseConfig.schedulesEnabled ? (
+                      <>
+                        <p className="text-xs text-gray-400 mb-3">
+                          Configure multiple respawn times per week with timezone support. Schedules can overlap (combine percentages).
+                        </p>
+                        
+                        {/* Schedule List */}
+                        {schedulesLoading ? (
+                          <div className="text-center py-4 text-gray-400">Loading schedules...</div>
+                        ) : schedules.length === 0 ? (
+                          <div className="bg-gray-800 rounded p-3 text-center text-gray-400 text-sm">
+                            No schedules configured. Click "Add Schedule" to create one.
+                          </div>
+                        ) : (
+                          <div className="space-y-2 max-h-64 overflow-y-auto">
+                            {schedules.map((schedule) => {
+                              const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                              const hourStr = schedule.hour.toString().padStart(2, '0') + ':00';
+                              const tzShort = schedule.timezone.split('/').pop();
+                              
+                              return (
+                                <div 
+                                  key={schedule.id}
+                                  className={`bg-gray-800 rounded p-2 flex items-center justify-between ${!schedule.enabled ? 'opacity-50' : ''}`}
+                                >
+                                  <div className="flex items-center gap-3">
+                                    <button
+                                      onClick={() => handleToggleSchedule(schedule)}
+                                      className={`w-12 h-6 rounded-full transition-colors ${schedule.enabled ? 'bg-green-600' : 'bg-gray-600'}`}
+                                    >
+                                      <div className={`w-5 h-5 bg-white rounded-full transition-transform ${schedule.enabled ? 'translate-x-6' : 'translate-x-0.5'}`} />
+                                    </button>
+                                    <div className="flex-1">
+                                      <div className="text-sm text-white font-medium">
+                                        {schedule.name || `Schedule ${days[schedule.dayOfWeek]} ${hourStr}`}
+                                      </div>
+                                      <div className="text-xs text-gray-400">
+                                        {days[schedule.dayOfWeek]} at {hourStr} {tzShort} • {schedule.spawnPercentage}% spawn
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <button
+                                      onClick={() => handleEditSchedule(schedule)}
+                                      className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded"
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteSchedule(schedule.id)}
+                                      className="px-3 py-1 bg-red-600 hover:bg-red-500 text-white text-xs rounded"
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                        
+                        <button
+                          onClick={() => {
+                            setEditingSchedule(null);
+                            setScheduleForm({
+                              enabled: true,
+                              dayOfWeek: 0,
+                              hour: 4,
+                              spawnPercentage: 100,
+                              timezone: 'America/New_York',
+                              name: ''
+                            });
+                            setShowScheduleModal(true);
+                          }}
+                          className="mt-3 w-full bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded text-sm font-semibold"
+                        >
+                          ➕ Add Schedule
+                        </button>
+                      </>
+                    ) : (
+                      <div className="text-xs text-gray-400">
+                        Using legacy single schedule: {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][beerBaseConfig.respawnDay]} at {beerBaseConfig.respawnHour.toString().padStart(2, '0')}:00
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 mt-4">
+                    <button 
+                      onClick={handleSaveBeerBaseConfig}
+                      disabled={beerBaseLoading}
+                      className="bg-yellow-600 hover:bg-yellow-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg font-semibold transition-colors"
+                    >
+                      💾 Save Beer Base Config
+                    </button>
+                    <button 
+                      onClick={handleRespawnBeerBases}
+                      disabled={beerBaseLoading}
+                      className="bg-orange-600 hover:bg-orange-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-6 py-2 rounded-lg font-semibold transition-colors"
+                    >
+                      🍺 Manual Respawn Now
+                    </button>
+                  </div>
+
+                  <div className="mt-3 text-xs text-gray-400 bg-gray-800 rounded p-2">
+                    <strong>How it works:</strong> System checks active players (last 7 days), analyzes their levels, 
+                    and spawns Beer Bases with appropriate power tiers. Distribution: 40% same tier, 30% one up, 10% one down, 20% two up.
+                  </div>
+                </div>
+
+                {/* Beer Base Analytics Dashboard (FID-20251025-004) */}
+                <div className="mt-4 bg-cyan-900/10 border border-cyan-500/20 rounded-lg">
+                  <button
+                    onClick={() => {
+                      setBeerAnalyticsExpanded(!beerAnalyticsExpanded);
+                      if (!beerAnalyticsExpanded && !beerSpawnStats) {
+                        loadBeerBaseAnalytics();
+                      }
+                    }}
+                    className="w-full p-3 text-left hover:bg-cyan-900/20 transition-colors flex items-center justify-between rounded-lg"
+                  >
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-semibold text-cyan-200">
+                        📊 Beer Base Analytics Dashboard
+                      </h4>
+                      <span className="text-xs text-gray-400">(365-day retention)</span>
+                    </div>
+                    <span className="text-2xl text-cyan-400">{beerAnalyticsExpanded ? '▼' : '▶'}</span>
+                  </button>
+                  
+                  {beerAnalyticsExpanded && (
+                    <div className="p-4 pt-0 space-y-4">
+                      {/* Period Selector & Actions */}
+                      <div className="flex items-center justify-between bg-gray-800 rounded-lg p-3">
+                        <div className="flex gap-2">
+                          {(['7d', '14d', '30d', '90d', '365d'] as const).map((period) => (
+                            <button
+                              key={period}
+                              onClick={() => setBeerAnalyticsPeriod(period)}
+                              className={`px-3 py-1 rounded text-xs font-semibold transition-colors ${
+                                beerAnalyticsPeriod === period
+                                  ? 'bg-cyan-600 text-white'
+                                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                              }`}
+                            >
+                              {period.toUpperCase()}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={loadBeerBaseAnalytics}
+                            disabled={beerAnalyticsLoading}
+                            className="px-3 py-1 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 text-white rounded text-xs font-semibold transition-colors"
+                          >
+                            {beerAnalyticsLoading ? '⟳' : '🔄'} Refresh
+                          </button>
+                          <button
+                            onClick={async () => {
+                              const startDate = new Date();
+                              startDate.setDate(startDate.getDate() - parseInt(beerAnalyticsPeriod));
+                              const endDate = new Date();
+                              
+                              const startStr = startDate.toISOString();
+                              const endStr = endDate.toISOString();
+                              
+                              window.open(
+                                `/api/admin/beer-bases/analytics/export?format=csv&startDate=${startStr}&endDate=${endStr}`,
+                                '_blank'
+                              );
+                            }}
+                            className="px-3 py-1 bg-green-600 hover:bg-green-500 text-white rounded text-xs font-semibold transition-colors"
+                          >
+                            📥 Export CSV
+                          </button>
+                        </div>
+                      </div>
+
+                      {beerAnalyticsLoading && !beerSpawnStats ? (
+                        <div className="text-center py-8 text-gray-400">Loading analytics...</div>
+                      ) : beerAnalyticsError ? (
+                        <div className="bg-red-900/30 border border-red-500/30 rounded p-4 text-red-300">
+                          ❌ Error: {beerAnalyticsError}
+                        </div>
+                      ) : (
+                        <>
+                          {/* Quick Stats Cards */}
+                          <div className="grid grid-cols-4 gap-3">
+                            <div className="bg-gray-800 rounded-lg p-3 border border-cyan-500/30">
+                              <div className="text-xs text-gray-400 mb-1">Total Spawns</div>
+                              <div className="text-2xl font-bold text-cyan-400">
+                                {beerSpawnStats?.dailySpawns?.reduce((sum: number, d: any) => sum + d.count, 0) || 0}
+                              </div>
+                              <div className="text-xs text-gray-500">
+                                Avg: {beerSpawnStats?.averagePerDay?.toFixed(1) || '0'}/day
+                              </div>
+                            </div>
+                            <div className="bg-gray-800 rounded-lg p-3 border border-red-500/30">
+                              <div className="text-xs text-gray-400 mb-1">Total Defeats</div>
+                              <div className="text-2xl font-bold text-red-400">
+                                {beerDefeatStats?.dailyDefeats?.reduce((sum: number, d: any) => sum + d.count, 0) || 0}
+                              </div>
+                              <div className="text-xs text-gray-500">
+                                Avg: {beerDefeatStats?.averagePerDay?.toFixed(1) || '0'}/day
+                              </div>
+                            </div>
+                            <div className="bg-gray-800 rounded-lg p-3 border border-yellow-500/30">
+                              <div className="text-xs text-gray-400 mb-1">Defeat Rate</div>
+                              <div className="text-2xl font-bold text-yellow-400">
+                                {beerEffectivenessStats?.defeatRate 
+                                  ? `${(beerEffectivenessStats.defeatRate * 100).toFixed(1)}%`
+                                  : '0%'}
+                              </div>
+                              <div className="text-xs text-gray-500">
+                                Engagement Score: {beerEffectivenessStats?.engagementScore?.toFixed(2) || '0'}
+                              </div>
+                            </div>
+                            <div className="bg-gray-800 rounded-lg p-3 border border-purple-500/30">
+                              <div className="text-xs text-gray-400 mb-1">Avg Lifespan</div>
+                              <div className="text-2xl font-bold text-purple-400">
+                                {beerEffectivenessStats?.avgLifespanByTier?.[0]?.avgLifespanHours
+                                  ? `${(beerEffectivenessStats.avgLifespanByTier.reduce((sum: number, t: any) => sum + (t.avgLifespanHours || 0), 0) / beerEffectivenessStats.avgLifespanByTier.length).toFixed(1)}h`
+                                  : '0h'}
+                              </div>
+                              <div className="text-xs text-gray-500">All tiers combined</div>
+                            </div>
+                          </div>
+
+                          {/* Tier Distribution */}
+                          <div className="bg-gray-800 rounded-lg p-4">
+                            <h5 className="text-sm font-semibold text-cyan-300 mb-3">🎯 Spawn Distribution by Tier</h5>
+                            <div className="space-y-2">
+                              {beerSpawnStats?.tierDistribution?.map((tier: any) => {
+                                const percentage = (tier.count / (beerSpawnStats?.dailySpawns?.reduce((sum: number, d: any) => sum + d.count, 0) || 1)) * 100;
+                                const tierNames = ['WEAK', 'MEDIUM', 'STRONG', 'ELITE', 'ULTRA', 'LEGENDARY'];
+                                const tierColors = ['bg-green-500', 'bg-blue-500', 'bg-purple-500', 'bg-orange-500', 'bg-red-500', 'bg-pink-500'];
+                                
+                                return (
+                                  <div key={tier.tier} className="flex items-center gap-3">
+                                    <div className="w-24 text-xs text-gray-400">{tierNames[tier.tier]}</div>
+                                    <div className="flex-1 bg-gray-700 rounded-full h-6 overflow-hidden">
+                                      <div 
+                                        className={`${tierColors[tier.tier]} h-full flex items-center justify-center text-xs font-bold text-white transition-all`}
+                                        style={{ width: `${percentage}%` }}
+                                      >
+                                        {percentage >= 10 && `${percentage.toFixed(1)}%`}
+                                      </div>
+                                    </div>
+                                    <div className="w-16 text-right text-sm font-bold text-white">{tier.count}</div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Defeat Stats by Tier */}
+                          <div className="bg-gray-800 rounded-lg p-4">
+                            <h5 className="text-sm font-semibold text-red-300 mb-3">⚔️ Defeats by Tier</h5>
+                            <div className="space-y-2">
+                              {beerDefeatStats?.defeatsByTier?.map((tier: any) => {
+                                const tierNames = ['WEAK', 'MEDIUM', 'STRONG', 'ELITE', 'ULTRA', 'LEGENDARY'];
+                                const tierColors = ['text-green-400', 'text-blue-400', 'text-purple-400', 'text-orange-400', 'text-red-400', 'text-pink-400'];
+                                
+                                return (
+                                  <div key={tier.tier} className="flex items-center justify-between bg-gray-700/50 rounded px-3 py-2">
+                                    <span className={`text-sm font-semibold ${tierColors[tier.tier]}`}>
+                                      {tierNames[tier.tier]}
+                                    </span>
+                                    <span className="text-sm text-white font-bold">{tier.count} defeats</span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Top Players */}
+                          <div className="bg-gray-800 rounded-lg p-4">
+                            <h5 className="text-sm font-semibold text-yellow-300 mb-3">🏆 Top Beer Base Hunters</h5>
+                            <div className="space-y-2">
+                              {beerDefeatStats?.topPlayers?.slice(0, 10).map((player: any, index: number) => (
+                                <div key={player.username} className="flex items-center justify-between bg-gray-700/50 rounded px-3 py-2">
+                                  <div className="flex items-center gap-3">
+                                    <span className="text-lg">
+                                      {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`}
+                                    </span>
+                                    <span className="text-sm font-semibold text-white">{player.username}</span>
+                                  </div>
+                                  <div className="flex items-center gap-4 text-xs">
+                                    <span className="text-red-400">
+                                      {player.totalDefeats} defeats
+                                    </span>
+                                    <span className="text-blue-400">
+                                      {player.totalRewards.metal.toLocaleString()} 🔩
+                                    </span>
+                                    <span className="text-yellow-400">
+                                      {player.totalRewards.energy.toLocaleString()} ⚡
+                                    </span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Effectiveness Metrics */}
+                          <div className="bg-gray-800 rounded-lg p-4">
+                            <h5 className="text-sm font-semibold text-purple-300 mb-3">📈 Effectiveness Metrics</h5>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div>
+                                <div className="text-xs text-gray-400 mb-2">Average Lifespan by Tier</div>
+                                <div className="space-y-1">
+                                  {beerEffectivenessStats?.avgLifespanByTier?.map((tier: any) => {
+                                    const tierNames = ['WEAK', 'MEDIUM', 'STRONG', 'ELITE', 'ULTRA', 'LEGENDARY'];
+                                    return (
+                                      <div key={tier.tier} className="flex justify-between text-xs">
+                                        <span className="text-gray-400">{tierNames[tier.tier]}:</span>
+                                        <span className="text-white font-semibold">
+                                          {tier.avgLifespanHours?.toFixed(1) || '0'}h
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-xs text-gray-400 mb-2">Peak Activity Hours (UTC)</div>
+                                <div className="space-y-1">
+                                  {beerEffectivenessStats?.peakHours?.slice(0, 3).map((peak: any, index: number) => (
+                                    <div key={peak.hour} className="flex justify-between text-xs">
+                                      <span className="text-gray-400">
+                                        {index === 0 ? '🥇' : index === 1 ? '🥈' : '🥉'} {peak.hour.toString().padStart(2, '0')}:00
+                                      </span>
+                                      <span className="text-white font-semibold">{peak.count} defeats</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Spawn Sources */}
+                          {beerSpawnStats?.spawnSources && (
+                            <div className="bg-gray-800 rounded-lg p-4">
+                              <h5 className="text-sm font-semibold text-green-300 mb-3">🎲 Spawn Sources</h5>
+                              <div className="flex gap-4">
+                                {beerSpawnStats.spawnSources.map((source: any) => (
+                                  <div key={source.source} className="flex-1 bg-gray-700/50 rounded p-3 text-center">
+                                    <div className="text-xs text-gray-400 mb-1">
+                                      {source.source === 'auto' ? 'Automatic' : 'Manual'}
+                                    </div>
+                                    <div className="text-xl font-bold text-green-400">{source.count}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Predictive Spawning Configuration (FID-20251025-002) */}
+                <div className="mt-4 bg-green-900/10 border border-green-500/20 rounded-lg">
+                  <button
+                    onClick={() => {
+                      const expanded = !(beerBaseConfig as any).predictiveExpanded;
+                      setBeerBaseConfig({ ...beerBaseConfig, predictiveExpanded: expanded } as any);
+                    }}
+                    className="w-full p-3 text-left hover:bg-green-900/20 transition-colors flex items-center justify-between rounded-lg"
+                  >
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-semibold text-green-200">
+                        🔮 Predictive Spawning
+                      </h4>
+                      <span className="text-xs text-gray-400">(Historical data forecasting)</span>
+                    </div>
+                    <span className="text-2xl text-green-400">{(beerBaseConfig as any).predictiveExpanded ? '▼' : '▶'}</span>
+                  </button>
+                  
+                  {(beerBaseConfig as any).predictiveExpanded && (
+                    <div className="p-4 pt-0 space-y-4">
+                      <p className="text-xs text-gray-400">
+                        🧠 <strong>AI-Powered Forecasting:</strong> Uses 365-day player history with linear regression to predict 
+                        future player levels. Spawns appropriate tiers <em>ahead</em> of progression curve.
+                      </p>
+                      
+                      {/* Mode Toggle */}
+                      <div className="bg-gray-800 rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <label className="text-sm font-semibold text-green-300">Predictive Mode</label>
+                          <select 
+                            value={(beerBaseConfig as any).usePredictiveSpawning ? 'true' : 'false'}
+                            onChange={(e) => setBeerBaseConfig({
+                              ...beerBaseConfig, 
+                              usePredictiveSpawning: e.target.value === 'true'
+                            } as any)}
+                            className="bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-sm"
+                          >
+                            <option value="false">📊 Current Player Levels</option>
+                            <option value="true">🔮 Predictive (Forecast)</option>
+                          </select>
+                        </div>
+                        
+                        {(beerBaseConfig as any).usePredictiveSpawning && (
+                          <div className="space-y-2">
+                            <label className="text-xs text-gray-400">Prediction Horizon (weeks ahead)</label>
+                            <input 
+                              type="number"
+                              min="1"
+                              max="12"
+                              value={(beerBaseConfig as any).predictiveWeeksAhead || 2}
+                              onChange={(e) => setBeerBaseConfig({
+                                ...beerBaseConfig,
+                                predictiveWeeksAhead: parseInt(e.target.value) || 2
+                              } as any)}
+                              className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white text-sm"
+                            />
+                            <p className="text-xs text-gray-500">
+                              Default: 2 weeks. Higher values = spawns more challenging ahead of current playerbase
+                            </p>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Current Mode Indicator */}
+                      <div className={`rounded-lg p-3 border-2 ${
+                        (beerBaseConfig as any).usePredictiveSpawning 
+                          ? 'bg-green-900/20 border-green-500/30' 
+                          : 'bg-blue-900/20 border-blue-500/30'
+                      }`}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-2xl">{(beerBaseConfig as any).usePredictiveSpawning ? '🔮' : '📊'}</span>
+                          <div>
+                            <div className="text-sm font-bold text-white">
+                              {(beerBaseConfig as any).usePredictiveSpawning ? 'PREDICTIVE MODE ACTIVE' : 'CURRENT MODE ACTIVE'}
+                            </div>
+                            <div className="text-xs text-gray-400">
+                              {(beerBaseConfig as any).usePredictiveSpawning 
+                                ? `Spawning based on projected levels ${(beerBaseConfig as any).predictiveWeeksAhead || 2} weeks ahead`
+                                : 'Spawning based on current player levels (last 7 days activity)'}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Distribution Comparison */}
+                      <div className="bg-gray-800 rounded-lg p-4">
+                        <h5 className="text-sm font-semibold text-green-300 mb-3">📊 Distribution Comparison</h5>
+                        <p className="text-xs text-gray-400 mb-3">
+                          Compare current vs predicted tier distributions. Predictive mode helps maintain challenge as players progress.
+                        </p>
+                        
+                        <div className="grid grid-cols-6 gap-2 text-xs">
+                          <div className="text-center text-gray-400 font-semibold">Tier</div>
+                          <div className="text-center text-gray-400 font-semibold">WEAK</div>
+                          <div className="text-center text-gray-400 font-semibold">MID</div>
+                          <div className="text-center text-gray-400 font-semibold">STRONG</div>
+                          <div className="text-center text-gray-400 font-semibold">ELITE</div>
+                          <div className="text-center text-gray-400 font-semibold">ULTRA</div>
+                          
+                          {/* Current Distribution Row */}
+                          <div className="text-left text-blue-400 font-semibold">Current</div>
+                          {[0, 1, 2, 3, 4].map((tier) => (
+                            <div key={`current-${tier}`} className="bg-blue-900/30 rounded p-1 text-center text-white">
+                              —%
+                            </div>
+                          ))}
+                          
+                          {/* Predicted Distribution Row */}
+                          <div className="text-left text-green-400 font-semibold">Predicted</div>
+                          {[0, 1, 2, 3, 4].map((tier) => (
+                            <div key={`predicted-${tier}`} className="bg-green-900/30 rounded p-1 text-center text-white">
+                              —%
+                            </div>
+                          ))}
+                        </div>
+                        
+                        <div className="mt-3 text-xs text-gray-500">
+                          <strong>Note:</strong> Real-time distribution data requires backend integration with 
+                          /api/admin/beer-bases/predictive-comparison endpoint. Values shown when available.
+                        </div>
+                      </div>
+
+                      {/* Manual Recalculation */}
+                      <div className="flex gap-3">
+                        <button
+                          onClick={async () => {
+                            try {
+                              setBeerBaseLoading(true);
+                              const res = await fetch('/api/admin/beer-bases/recalculate-predictions', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  weeksAhead: (beerBaseConfig as any).predictiveWeeksAhead || 2
+                                })
+                              });
+                              const data = await res.json();
+                              if (data.success) {
+                                alert(`✅ Predictions recalculated!\n\nProjected ${data.playerCount} players over ${data.weeksAhead} weeks.\nNew distribution: ${JSON.stringify(data.distribution, null, 2)}`);
+                              } else {
+                                alert(`❌ Error: ${data.error}`);
+                              }
+                            } catch (err) {
+                              console.error('Recalculation error:', err);
+                              alert('Failed to recalculate predictions');
+                            } finally {
+                              setBeerBaseLoading(false);
+                            }
+                          }}
+                          disabled={beerBaseLoading}
+                          className="flex-1 bg-green-600 hover:bg-green-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded font-semibold text-sm transition-colors"
+                        >
+                          {beerBaseLoading ? '⏳ Calculating...' : '🔄 Recalculate Predictions'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            alert('🔮 Predictive Spawning Details:\n\n' +
+                              '1. ALGORITHM: Linear regression on 365 days of player snapshots\n' +
+                              '2. PROJECTION: Forecasts player levels N weeks ahead\n' +
+                              '3. TIER MAPPING: Projected levels → Power tier distribution\n' +
+                              '4. VARIETY: Still enforces min/max tier percentages\n' +
+                              '5. FALLBACK: Reverts to current distribution if prediction fails\n\n' +
+                              'Use Case: Prevent "too easy" spawns as playerbase advances rapidly'
+                            );
+                          }}
+                          className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded font-semibold text-sm transition-colors"
+                        >
+                          ℹ️ How It Works
+                        </button>
+                      </div>
+
+                      {/* Implementation Status */}
+                      <div className="bg-yellow-900/20 border border-yellow-500/30 rounded p-3">
+                        <div className="flex items-start gap-2">
+                          <span className="text-lg">⚠️</span>
+                          <div className="text-xs text-yellow-300">
+                            <strong>Implementation Status:</strong> Backend integration complete. 
+                            API endpoints /api/admin/beer-bases/predictive-comparison and 
+                            /api/admin/beer-bases/recalculate-predictions may need implementation for full UI functionality.
+                            Core spawning logic is already active in beerBaseService.ts.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Tech System Costs */}
@@ -2019,7 +3092,7 @@ Regen Cycle: ${botStats.lastRegenCycle || 'Never'}
                                 <div className="flex items-center gap-2">
                                   <span>{index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`}</span>
                                   <span className="font-semibold">{player.username}</span>
-                                  {player.isVIP && <span className="text-xs bg-purple-600 px-1 py-0.5 rounded">VIP</span>}
+                                  {player.vip && <span className="text-xs bg-purple-600 px-1 py-0.5 rounded">VIP</span>}
                                 </div>
                                 <span className="text-green-400 font-bold">{player.amount?.toLocaleString()} RP</span>
                               </div>
@@ -2040,7 +3113,7 @@ Regen Cycle: ${botStats.lastRegenCycle || 'Never'}
                                 <div className="flex items-center gap-2">
                                   <span>{index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`}</span>
                                   <span className="font-semibold">{player.username}</span>
-                                  {player.isVIP && <span className="text-xs bg-purple-600 px-1 py-0.5 rounded">VIP</span>}
+                                  {player.vip && <span className="text-xs bg-purple-600 px-1 py-0.5 rounded">VIP</span>}
                                 </div>
                                 <span className="text-red-400 font-bold">{player.amount?.toLocaleString()} RP</span>
                               </div>
@@ -2183,6 +3256,128 @@ Regen Cycle: ${botStats.lastRegenCycle || 'Never'}
               isOpen={showHotkeyManager}
               onClose={() => setShowHotkeyManager(false)}
             />
+          )}
+
+          {/* Schedule Management Modal (FID-20251025-003) */}
+          {showScheduleModal && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+              <div className="bg-gray-800 rounded-lg p-6 max-w-md w-full border-2 border-blue-500">
+                <h3 className="text-xl font-bold text-blue-300 mb-4">
+                  {editingSchedule ? 'Edit Schedule' : 'Add New Schedule'}
+                </h3>
+                
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-sm text-gray-400 block mb-1">Schedule Name (optional)</label>
+                    <input
+                      type="text"
+                      value={scheduleForm.name}
+                      onChange={(e) => setScheduleForm({...scheduleForm, name: e.target.value})}
+                      placeholder="e.g., Weekend Morning Spawn"
+                      className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
+                    />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-sm text-gray-400 block mb-1">Day of Week</label>
+                      <select
+                        value={scheduleForm.dayOfWeek}
+                        onChange={(e) => setScheduleForm({...scheduleForm, dayOfWeek: parseInt(e.target.value)})}
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
+                      >
+                        <option value="0">Sunday</option>
+                        <option value="1">Monday</option>
+                        <option value="2">Tuesday</option>
+                        <option value="3">Wednesday</option>
+                        <option value="4">Thursday</option>
+                        <option value="5">Friday</option>
+                        <option value="6">Saturday</option>
+                      </select>
+                    </div>
+                    
+                    <div>
+                      <label className="text-sm text-gray-400 block mb-1">Hour (0-23)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="23"
+                        value={scheduleForm.hour}
+                        onChange={(e) => setScheduleForm({...scheduleForm, hour: parseInt(e.target.value) || 0})}
+                        className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
+                      />
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <label className="text-sm text-gray-400 block mb-1">Spawn Percentage (1-200%)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="200"
+                      value={scheduleForm.spawnPercentage}
+                      onChange={(e) => setScheduleForm({...scheduleForm, spawnPercentage: parseInt(e.target.value) || 100})}
+                      className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Tip: Multiple schedules can combine (e.g., two 50% schedules = 100% total)
+                    </p>
+                  </div>
+                  
+                  <div>
+                    <label className="text-sm text-gray-400 block mb-1">Timezone</label>
+                    <select
+                      value={scheduleForm.timezone}
+                      onChange={(e) => setScheduleForm({...scheduleForm, timezone: e.target.value})}
+                      className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
+                    >
+                      <option value="America/New_York">Eastern (EST/EDT)</option>
+                      <option value="America/Chicago">Central (CST/CDT)</option>
+                      <option value="America/Denver">Mountain (MST/MDT)</option>
+                      <option value="America/Los_Angeles">Pacific (PST/PDT)</option>
+                      <option value="Europe/London">London (GMT/BST)</option>
+                      <option value="Europe/Paris">Paris (CET/CEST)</option>
+                      <option value="Asia/Tokyo">Tokyo (JST)</option>
+                      <option value="Asia/Shanghai">Shanghai (CST)</option>
+                      <option value="Australia/Sydney">Sydney (AEDT/AEST)</option>
+                      <option value="UTC">UTC</option>
+                    </select>
+                  </div>
+                  
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="scheduleEnabled"
+                      checked={scheduleForm.enabled}
+                      onChange={(e) => setScheduleForm({...scheduleForm, enabled: e.target.checked})}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="scheduleEnabled" className="text-sm text-gray-300">
+                      Schedule Enabled
+                    </label>
+                  </div>
+                </div>
+                
+                <div className="flex gap-3 mt-6">
+                  <button
+                    onClick={handleSaveSchedule}
+                    disabled={schedulesLoading}
+                    className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-4 py-2 rounded font-semibold"
+                  >
+                    {schedulesLoading ? 'Saving...' : 'Save Schedule'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowScheduleModal(false);
+                      setEditingSchedule(null);
+                    }}
+                    className="flex-1 bg-gray-600 hover:bg-gray-500 text-white px-4 py-2 rounded font-semibold"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
         )}

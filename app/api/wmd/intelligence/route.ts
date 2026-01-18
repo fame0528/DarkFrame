@@ -17,7 +17,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { connectToDatabase, getAuthenticatedPlayer } from '@/lib/wmd/apiHelpers';
+import { connectToDatabase } from '@/lib/mongodb';
+import { getAuthenticatedPlayer } from '@/lib/wmd/apiHelpers';
 import {
   recruitSpy,
   trainSpy,
@@ -30,6 +31,17 @@ import {
 } from '@/lib/wmd/spyService';
 import { getIO } from '@/lib/websocket/server';
 import { wmdHandlers } from '@/lib/websocket/handlers';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * GET /api/wmd/intelligence
@@ -38,13 +50,16 @@ import { wmdHandlers } from '@/lib/websocket/handlers';
  * Query:
  * - type: 'spies' | 'missions'
  */
-export async function GET(req: NextRequest) {
+export const GET = withRequestLogging(rateLimiter(async (req: NextRequest) => {
+  const log = createRouteLogger('wmd-intelligence-get');
+  const endTimer = log.time('intelligence-get');
+  
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, 'Authentication required');
     }
     
     const { searchParams } = new URL(req.url);
@@ -70,8 +85,10 @@ export async function GET(req: NextRequest) {
       { error: 'Failed to fetch intelligence data' },
       { status: 500 }
     );
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * POST /api/wmd/intelligence
@@ -86,7 +103,7 @@ export async function GET(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
@@ -276,7 +293,7 @@ export async function POST(req: NextRequest) {
  */
 export async function PATCH(req: NextRequest) {
   try {
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const auth = await getAuthenticatedPlayer(req, db);
     
     if (!auth) {
@@ -364,3 +381,4 @@ export async function PATCH(req: NextRequest) {
     );
   }
 }
+

@@ -9,6 +9,20 @@ import { verifyAuth } from '@/lib/authMiddleware';
 import { createAuctionListing } from '@/lib/auctionService';
 import { CreateAuctionRequest } from '@/types/auction.types';
 import { logger } from '@/lib/logger';
+import { 
+  withRequestLogging, 
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  CreateAuctionSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.auctionCreate);
 
 /**
  * POST /api/auction/create
@@ -32,51 +46,62 @@ import { logger } from '@/lib/logger';
  *   auction?: AuctionListing
  * }
  */
-export async function POST(request: Request) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AuctionCreateAPI');
+  const endTimer = log.time('createAuction');
+  
   try {
     // Verify authentication
     const authResult = await verifyAuth();
     if (!authResult || !authResult.username) {
-      return NextResponse.json(
-        { success: false, message: 'Authentication required' },
-        { status: 401 }
-      );
+      log.warn('Unauthenticated auction creation attempt');
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED);
     }
 
     const username = authResult.username;
 
-    // Parse request body
+    // Parse and validate request body
     const body: CreateAuctionRequest = await request.json();
+    const validated = CreateAuctionSchema.parse(body);
 
-    // Validate request
-    if (!body.item || !body.startingBid || !body.duration) {
-      return NextResponse.json(
-        { success: false, message: 'Missing required fields: item, startingBid, duration' },
-        { status: 400 }
-      );
-    }
+    log.debug('Auction creation request', { 
+      username, 
+      itemType: validated.item.itemType,
+      startingBid: validated.startingBid, 
+      duration: validated.duration,
+      hasBuyout: !!validated.buyoutPrice
+    });
 
     // Create auction
-    const result = await createAuctionListing(username, body);
+    const result = await createAuctionListing(username, validated);
 
     if (!result.success) {
-      return NextResponse.json(result, { status: 400 });
+      log.warn('Auction creation failed', { username, reason: result.message });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, { message: result.message });
     }
+
+    log.info('Auction created successfully', { 
+      username, 
+      itemType: validated.item.itemType,
+      startingBid: validated.startingBid,
+      duration: validated.duration,
+      clanOnly: validated.clanOnly || false
+    });
 
     return NextResponse.json(result);
 
   } catch (error) {
-    logger.error('Error in create auction API', error instanceof Error ? error : new Error(String(error)));
-    return NextResponse.json(
-      {
-        success: false,
-        message: 'Failed to create auction',
-        error: 'SERVER_ERROR'
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      log.warn('Auction creation validation failed', { issues: error.issues });
+      return createValidationErrorResponse(error);
+    }
+
+    log.error('Auction creation error', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

@@ -21,7 +21,7 @@
  */
 
 import type { Db } from 'mongodb';
-import { connectToDatabase } from '@/lib/wmd/apiHelpers';
+import { connectToDatabase } from '@/lib/mongodb';
 import { getIO } from '@/lib/websocket/server';
 import { wmdHandlers } from '@/lib/websocket/handlers';
 import { WARHEAD_CONFIGS, type WarheadType } from '@/types/wmd';
@@ -192,7 +192,7 @@ export async function missileTracker(): Promise<void> {
   try {
     console.log('[WMD Jobs] Running missile tracker...');
     
-    const { db } = await connectToDatabase();
+    const db = await connectToDatabase();
     const io = getIO();
     const now = new Date();
     

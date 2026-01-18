@@ -9,13 +9,25 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 import { clearAuthCookie } from '@/lib/authService';
-import { logger } from '@/lib/logger';
 import { endSession } from '@/lib/sessionTracker';
 import { logActivity } from '@/lib/activityLogger';
 import { getAuthenticatedUser } from '@/lib/authMiddleware';
 
-export async function POST(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.AUTH);
+
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('LogoutAPI');
+  const endTimer = log.time('logout');
+  
   try {
     // Get user before clearing cookie
     const user = await getAuthenticatedUser();
@@ -49,18 +61,17 @@ export async function POST(request: NextRequest) {
     // Clear playerId cookie
     response.cookies.delete('playerId');
     
-    logger.info('User logged out successfully', { username: user?.username });
+    log.info('User logged out successfully', { username: user?.username });
     
     return response;
     
   } catch (error) {
-    logger.error('Logout error', error instanceof Error ? error : new Error(String(error)));
-    return NextResponse.json(
-      { success: false, error: 'Logout failed' },
-      { status: 500 }
-    );
+    log.error('Logout error', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // END OF FILE

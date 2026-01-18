@@ -1,6 +1,7 @@
 /**
  * @file app/api/harvest/route.ts
  * @created 2025-10-16
+ * @modified 2025-10-24 - Phase 2: Production infrastructure - validation, errors, rate limiting
  * @overview Harvest API endpoint for resource and cave tiles
  */
 
@@ -12,10 +13,23 @@ import { Player, Tile, TerrainType } from '@/types';
 import { awardXP, XPAction } from '@/lib/xpService';
 import { checkDiscoveryDrop } from '@/lib/discoveryService';
 import { trackResourcesGathered, trackCaveExplored } from '@/lib/statTrackingService';
-import { logger } from '@/lib/logger';
 import { logHarvest, logCaveExplore } from '@/lib/activityLogger';
 import { updateSession } from '@/lib/sessionTracker';
 import { detectResourceHack, detectCooldownViolation } from '@/lib/antiCheatDetector';
+import { 
+  withRequestLogging, 
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  HarvestSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.harvest);
 
 /**
  * POST /api/harvest
@@ -43,27 +57,25 @@ import { detectResourceHack, detectCooldownViolation } from '@/lib/antiCheatDete
  *   }
  * }
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('HarvestAPI');
+  const endTimer = log.time('harvestOperation');
+  
   try {
+    // Parse and validate request body
     const body = await request.json();
-    const { username } = body;
+    const validated = HarvestSchema.parse(body);
+    const { username } = validated;
     
-    if (!username) {
-      return NextResponse.json(
-        { success: false, error: 'Username is required' },
-        { status: 400 }
-      );
-    }
+    log.debug('Processing harvest request', { username });
     
     // Get player
     const playersCollection = await getCollection<Player>('players');
     const player = await playersCollection.findOne({ username });
     
     if (!player) {
-      return NextResponse.json(
-        { success: false, error: 'Player not found' },
-        { status: 404 }
-      );
+      log.warn('Player not found', { username });
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED);
     }
     
     // Get tile at player's current position
@@ -74,10 +86,8 @@ export async function POST(request: NextRequest) {
     });
     
     if (!tile) {
-      return NextResponse.json(
-        { success: false, error: 'Tile not found' },
-        { status: 404 }
-      );
+      log.warn('Tile not found', { position: player.currentPosition });
+      return createErrorResponse(ErrorCode.INTERNAL_ERROR);
     }
     
     // Check tile type and harvest accordingly
@@ -93,13 +103,8 @@ export async function POST(request: NextRequest) {
       // Harvest forest tile (BETTER loot than caves!)
       result = await harvestForestTile(username, tile);
     } else {
-      return NextResponse.json(
-        { 
-          success: false, 
-          error: `This tile (${tile.terrain}) cannot be harvested` 
-        },
-        { status: 400 }
-      );
+      log.warn('Cannot harvest tile', { terrain: tile.terrain, position: { x: tile.x, y: tile.y } });
+      return createErrorResponse(ErrorCode.HARVEST_INVALID_TILE, { terrain: tile.terrain });
     }
     
     // Get updated harvest status
@@ -208,6 +213,16 @@ export async function POST(request: NextRequest) {
     // Get updated player data (includes new XP/level and discoveries)
     const updatedPlayer = await playersCollection.findOne({ username });
     
+    const resultSummary = {
+      success: result.success,
+      metalGained: 'metalGained' in result ? result.metalGained : undefined,
+      energyGained: 'energyGained' in result ? result.energyGained : undefined,
+      itemFound: 'item' in result ? result.item?.name : undefined,
+    };
+    log.info('Harvest completed', { username, ...resultSummary });
+    
+    // Return harvest results WITHOUT player data to prevent auto-refresh
+    // Player can manually refresh if needed, but page should stay as-is
     return NextResponse.json({
       success: result.success,
       message: result.message,
@@ -220,23 +235,24 @@ export async function POST(request: NextRequest) {
       newLevel: xpResult?.newLevel,
       discovery: discoveryResult?.isNew ? discoveryResult.discovery : undefined,
       totalDiscoveries: discoveryResult?.totalDiscoveries,
-      player: updatedPlayer,
-      tile,
+      // DO NOT return player or tile - prevents auto-refresh
       harvestStatus
     });
     
   } catch (error) {
-    logger.error('Error in harvest API', error instanceof Error ? error : new Error(String(error)));
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: 'Failed to process harvest request',
-        details: error instanceof Error ? error.message : 'Unknown error'
-      },
-      { status: 500 }
-    );
+    log.error('Harvest API error', error as Error);
+    
+    // Handle validation errors
+    if (error instanceof ZodError) {
+      return createValidationErrorResponse(error);
+    }
+    
+    // Handle all other errors
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 // ============================================================
 // IMPLEMENTATION NOTES:

@@ -1,19 +1,50 @@
 /**
  * @file lib/botService.ts
  * @created 2025-10-18
- * @overview Bot ecosystem service with Full Permanence model
+ * @updated 2025-11-04 - Phase 7: Added Boss Bot System (1% spawn rate, elite rare encounters)
+ * @overview Bot ecosystem service with Full Permanence model (UPDATED: 7-Tier System + Level Bonuses)
  * 
  * OVERVIEW:
  * Manages AI-controlled bot players that mimic real player behavior.
  * Full Permanence Model: Bots stay on map permanently, regenerate resources hourly (5-20% by type).
  * Beer Bases despawn when defeated and respawn weekly at random locations.
  * 
+ * EXPANDED BOT TIER SYSTEM (7 Tiers):
+ * - Tier 1 (Level 1-10): 0.75x resources, 150 base defense
+ * - Tier 2 (Level 11-20): 1.0x resources, 300 base defense
+ * - Tier 3 (Level 21-30): 1.25x resources, 600 base defense
+ * - Tier 4 (Level 31-40): 1.5x resources, 1,200 base defense
+ * - Tier 5 (Level 41-50): 2.0x resources, 2,400 base defense
+ * - Tier 6 (Level 51-60): 2.5x resources, 4,800 base defense
+ * - Tier 7 (Level 61+): 3.0x resources, 9,600 base defense
+ * 
+ * DYNAMIC RESOURCE SCALING (NEW - Phase 6):
+ * - Player level bonuses: +25% per 10-level bracket (capped at Bracket 6 = +150%)
+ * - Level 0-9 (Bracket 0): 1.0x multiplier (no bonus)
+ * - Level 10-19 (Bracket 1): 1.25x multiplier (+25%)
+ * - Level 20-29 (Bracket 2): 1.5x multiplier (+50%)
+ * - Level 30-39 (Bracket 3): 1.75x multiplier (+75%)
+ * - Level 40-49 (Bracket 4): 2.0x multiplier (+100%)
+ * - Level 50-59 (Bracket 5): 2.25x multiplier (+125%)
+ * - Level 60+ (Bracket 6): 2.5x multiplier (+150%)
+ * - Functions: getPlayerLevelBonus(), applyPlayerLevelBonus(), getBotResourcesForPlayer()
+ * - Usage: Apply when displaying bots to players or during combat/loot calculations
+ * 
+ * BOSS BOT SYSTEM (NEW - Phase 7):
+ * - Specialization: BotSpecialization.Boss (1% spawn rate via getRandomSpecialization())
+ * - Stats: 4M-6M resources (fixed, no tier scaling), 200K+ defense (20x multiplier)
+ * - Behavior: Stationary (doesn't move), 2% regen/hour (50 hours to full)
+ * - Tier: Fixed at Tier 7 (Level 65), Legendary reputation, 5M bounty value
+ * - Purpose: Elite rare encounters requiring coordinated attacks from high-level players
+ * - Function: createBossBot(x, y, zone) for explicit boss spawning
+ * 
  * Bot Specializations:
- * - Hoarder (25%): 50k-150k resources, 0.5x defense, stationary, 5% regen/hour
- * - Fortress (20%): 3x defense, 5k-15k resources, stationary, 10% regen/hour
- * - Raider (25%): 3x attack frequency, mobile (3-5 tiles/day), 15% regen/hour
- * - Ghost (15%): 2x resources, teleports every 12 hours, 20% regen/hour
- * - Balanced (15%): Standard stats, moderate movement, 10% regen/hour
+ * - Boss (1%): 4M-6M resources, 20x defense, stationary, 2% regen/hour [NEW: Phase 7]
+ * - Hoarder (24.75%): 50k-150k resources, 0.5x defense, stationary, 5% regen/hour
+ * - Raider (24.75%): 3x attack frequency, mobile (3-5 tiles/day), 15% regen/hour
+ * - Fortress (19.8%): 3x defense, 5k-15k resources, stationary, 10% regen/hour
+ * - Ghost (14.85%): 2x resources, teleports every 12 hours, 20% regen/hour
+ * - Balanced (14.85%): Standard stats, moderate movement, 10% regen/hour
  * 
  * Features:
  * - 1000+ unique bot names (military/fantasy/sci-fi mix)
@@ -120,28 +151,34 @@ export function generateBotName(): string {
  * Get bot specialization with weighted distribution
  * 
  * Distribution:
- * - Hoarder: 25%
- * - Raider: 25%
- * - Fortress: 20%
- * - Ghost: 15%
- * - Balanced: 15%
+ * - Boss: 1% (NEW: Phase 7 - Rare elite encounters)
+ * - Hoarder: 24.75% (reduced from 25%)
+ * - Raider: 24.75% (reduced from 25%)
+ * - Fortress: 19.8% (reduced from 20%)
+ * - Ghost: 14.85% (reduced from 15%)
+ * - Balanced: 14.85% (reduced from 15%)
  * 
- * @returns Random bot specialization based on weights
+ * @returns Random bot specialization based on weighted probabilities
  */
 export function getRandomSpecialization(): BotSpecialization {
-  const roll = Math.random();
-  if (roll < 0.25) return BotSpecialization.Hoarder;
-  if (roll < 0.50) return BotSpecialization.Raider;
-  if (roll < 0.70) return BotSpecialization.Fortress;
-  if (roll < 0.85) return BotSpecialization.Ghost;
-  return BotSpecialization.Balanced;
+  const roll = Math.random() * 100;
+  
+  // 1% chance for Boss (elite rare spawn)
+  if (roll < 1) return BotSpecialization.Boss;
+  
+  // Remaining 99% distributed among standard specializations
+  if (roll < 25.75) return BotSpecialization.Hoarder;      // 24.75%
+  if (roll < 50.5) return BotSpecialization.Raider;        // 24.75%
+  if (roll < 70.3) return BotSpecialization.Fortress;      // 19.8%
+  if (roll < 85.15) return BotSpecialization.Ghost;        // 14.85%
+  return BotSpecialization.Balanced;                       // 14.85%
 }
 
 /**
  * Get resource range based on specialization and tier
  * 
  * @param specialization Bot type
- * @param tier Resource tier (1-3)
+ * @param tier Resource tier (1-7, expanded from original 1-3)
  * @returns Min and max resources for this bot
  */
 export function getResourceRange(specialization: BotSpecialization, tier: number): { min: number; max: number } {
@@ -150,16 +187,99 @@ export function getResourceRange(specialization: BotSpecialization, tier: number
     [BotSpecialization.Fortress]: { min: 5000, max: 15000 },
     [BotSpecialization.Raider]: { min: 10000, max: 40000 },
     [BotSpecialization.Ghost]: { min: 20000, max: 80000 },
-    [BotSpecialization.Balanced]: { min: 15000, max: 50000 }
+    [BotSpecialization.Balanced]: { min: 15000, max: 50000 },
+    [BotSpecialization.Boss]: { min: 4000000, max: 6000000 } // NEW: Phase 7 - Elite boss (4M-6M resources)
   };
 
   const range = baseRanges[specialization];
-  const tierMultiplier = 0.5 + (tier * 0.25); // Tier 1: 0.75x, Tier 2: 1.0x, Tier 3: 1.25x
+  
+  // Boss specialization uses fixed resources (no tier multiplier)
+  if (specialization === BotSpecialization.Boss) {
+    return range;
+  }
+  
+  // Expanded tier multipliers (7 tiers matching player level brackets)
+  // T1 (1-10): 0.75x, T2 (11-20): 1.0x, T3 (21-30): 1.25x, T4 (31-40): 1.5x, T5 (41-50): 2.0x, T6 (51-60): 2.5x, T7 (61+): 3.0x
+  const tierMultiplier = 0.5 + (tier * 0.25); // Progressive scaling up to T7 = 3.0x
 
   return {
     min: Math.floor(range.min * tierMultiplier),
     max: Math.floor(range.max * tierMultiplier)
   };
+}
+
+/**
+ * Calculate level-bracket bonus for bot resources
+ * Awards +25% per 10-level bracket to encourage progression
+ * 
+ * @param playerLevel - Player's current level
+ * @returns Multiplier (1.0 = no bonus, 1.25 = +25%, 2.5 = +150%, etc.)
+ * 
+ * @example
+ * getPlayerLevelBonus(5);   // Returns 1.0 (Bracket 0, no bonus)
+ * getPlayerLevelBonus(15);  // Returns 1.25 (Bracket 1, +25%)
+ * getPlayerLevelBonus(35);  // Returns 1.75 (Bracket 3, +75%)
+ * getPlayerLevelBonus(62);  // Returns 2.5 (Bracket 6, +150%)
+ * 
+ * NEW: Phase 6 - Dynamic resource scaling based on player level
+ */
+export function getPlayerLevelBonus(playerLevel: number): number {
+  // Level brackets: 0-9 (0), 10-19 (1), 20-29 (2), 30-39 (3), 40-49 (4), 50-59 (5), 60+ (6)
+  const bracket = Math.floor(playerLevel / 10);
+  
+  // +25% bonus per bracket (capped at bracket 6 = +150%)
+  const maxBracket = Math.min(bracket, 6);
+  const bonusMultiplier = 1.0 + (maxBracket * 0.25);
+  
+  return bonusMultiplier;
+}
+
+/**
+ * Apply player level bonus to bot resources
+ * Used when displaying bots to players or during combat
+ * 
+ * @param baseResources - Bot's base metal/energy amounts
+ * @param playerLevel - Player's current level
+ * @returns Adjusted resources with level-bracket bonus applied
+ * 
+ * @example
+ * applyPlayerLevelBonus({ metal: 100000, energy: 100000 }, 62);
+ * // Returns: { metal: 250000, energy: 250000 } (+150% bonus)
+ * 
+ * NEW: Phase 6 - Rewards high-level players with better bot loot
+ */
+export function applyPlayerLevelBonus(
+  baseResources: { metal: number; energy: number },
+  playerLevel: number
+): { metal: number; energy: number } {
+  const bonus = getPlayerLevelBonus(playerLevel);
+  
+  return {
+    metal: Math.floor(baseResources.metal * bonus),
+    energy: Math.floor(baseResources.energy * bonus)
+  };
+}
+
+/**
+ * Get bot resources with player level bonus applied
+ * Convenience function combining resource retrieval and bonus application
+ * 
+ * @param bot - Bot player object
+ * @param playerLevel - Player's current level
+ * @returns Bot resources with level-bracket bonus
+ * 
+ * @example
+ * const bot = { resources: { metal: 100000, energy: 100000 }, ... };
+ * getBotResourcesForPlayer(bot, 62);
+ * // Returns: { metal: 250000, energy: 250000 } (+150% for Level 62 player)
+ * 
+ * NEW: Phase 6 - Single function for getting player-specific bot resources
+ */
+export function getBotResourcesForPlayer(
+  bot: Player,
+  playerLevel: number
+): { metal: number; energy: number } {
+  return applyPlayerLevelBonus(bot.resources, playerLevel);
 }
 
 /**
@@ -175,7 +295,8 @@ export function getRegenerationRate(specialization: BotSpecialization): number {
     [BotSpecialization.Fortress]: 0.10,   // 10% per hour (10 hours to full)
     [BotSpecialization.Raider]: 0.15,     // 15% per hour (6.7 hours to full)
     [BotSpecialization.Ghost]: 0.20,      // 20% per hour (5 hours to full)
-    [BotSpecialization.Balanced]: 0.10    // 10% per hour (10 hours to full)
+    [BotSpecialization.Balanced]: 0.10,   // 10% per hour (10 hours to full)
+    [BotSpecialization.Boss]: 0.02        // 2% per hour (50 hours to full) - NEW: Phase 7
   };
   return rates[specialization];
 }
@@ -192,7 +313,8 @@ export function getDefenseMultiplier(specialization: BotSpecialization): number 
     [BotSpecialization.Fortress]: 3.0,
     [BotSpecialization.Raider]: 1.0,
     [BotSpecialization.Ghost]: 0.8,
-    [BotSpecialization.Balanced]: 1.0
+    [BotSpecialization.Balanced]: 1.0,
+    [BotSpecialization.Boss]: 20.0       // 20x defense (200K+ total) - NEW: Phase 7
   };
   return multipliers[specialization];
 }
@@ -209,7 +331,8 @@ export function getMovementPattern(specialization: BotSpecialization): 'stationa
     [BotSpecialization.Fortress]: 'stationary',
     [BotSpecialization.Raider]: 'roam',
     [BotSpecialization.Ghost]: 'teleport',
-    [BotSpecialization.Balanced]: 'roam'
+    [BotSpecialization.Balanced]: 'roam',
+    [BotSpecialization.Boss]: 'stationary'  // Bosses don't move - NEW: Phase 7
   };
   return patterns[specialization];
 }
@@ -305,25 +428,30 @@ export function getRandomPositionInZone(zone: number): Position {
  * @param zone Target zone for bot (0-8, or null for random)
  * @param specialization Override specialization (or null for random)
  * @param isSpecial Create as Beer Base (3x resources)
+ * @param tier Override tier (1-7, or null for random within appropriate range)
  * @returns Bot player object ready for database insert
  */
-export async function createBot(
+export async function createBotPlayer(
   zone: number | null = null,
   specialization: BotSpecialization | null = null,
-  isSpecial: boolean = false
+  isSpecial: boolean = false,
+  tier: number | null = null
 ): Promise<Partial<Player>> {
   const botSpec = specialization || getRandomSpecialization();
   const targetZone = zone ?? Math.floor(Math.random() * 9);
-  const tier = Math.floor(Math.random() * 3) + 1; // 1-3
+  
+  // Expanded tier system: 1-7 (matching player level brackets)
+  // If tier not specified, randomly select from 1-7 with weighted distribution
+  const botTier = tier ?? getBotTierForZone(targetZone);
   
   const position = getRandomPositionInZone(targetZone);
-  const resourceRange = getResourceRange(botSpec, tier);
+  const resourceRange = getResourceRange(botSpec, botTier);
   const baseResources = Math.floor(Math.random() * (resourceRange.max - resourceRange.min + 1)) + resourceRange.min;
   const resources = isSpecial ? baseResources * 3 : baseResources;
   
   const botConfig: BotConfig = {
     specialization: botSpec,
-    tier,
+    tier: botTier,
     lastGrowth: new Date(),
     attackCooldown: new Date(),
     isSpecialBase: isSpecial,
@@ -337,7 +465,10 @@ export async function createBot(
   };
   
   const defenseMultiplier = getDefenseMultiplier(botSpec);
-  const baseDefense = 100 + (tier * 50);
+  
+  // Expanded defense calculation (7 tiers)
+  // Base defense scales significantly with tier for end-game challenge
+  const baseDefense = getBotDefenseForTier(botTier);
   
   return {
     username: generateBotName(),
@@ -354,7 +485,7 @@ export async function createBot(
       energy: 0,
       lastDeposit: null
     },
-    rank: tier,
+    rank: Math.min(6, Math.ceil(botTier / 2)), // Rank 1-6 based on tier
     inventory: {
       items: [],
       capacity: 0,
@@ -368,13 +499,157 @@ export async function createBot(
     totalStrength: 0,
     totalDefense: Math.floor(baseDefense * defenseMultiplier),
     xp: 0,
-    level: tier * 5,
+    level: getPlayerLevelForTier(botTier),
     researchPoints: 0,
     unlockedTiers: [],
     isBot: true,
     botConfig,
     createdAt: new Date()
   };
+}
+
+/**
+ * Get appropriate bot tier for a given zone
+ * Zones 0-2: Lower tiers (1-3)
+ * Zones 3-5: Mid tiers (3-5)
+ * Zones 6-8: High tiers (5-7)
+ * 
+ * @param zone Map zone (0-8)
+ * @returns Bot tier (1-7)
+ */
+function getBotTierForZone(zone: number): number {
+  if (zone <= 2) {
+    // Zones 0-2: Beginner areas (T1-T3)
+    return Math.floor(Math.random() * 3) + 1; // 1-3
+  } else if (zone <= 5) {
+    // Zones 3-5: Mid-game areas (T3-T5)
+    return Math.floor(Math.random() * 3) + 3; // 3-5
+  } else {
+    // Zones 6-8: End-game areas (T5-T7)
+    return Math.floor(Math.random() * 3) + 5; // 5-7
+  }
+}
+
+/**
+ * Calculate base defense for bot tier
+ * Exponential scaling for end-game challenge
+ * 
+ * @param tier Bot tier (1-7)
+ * @returns Base defense value
+ */
+function getBotDefenseForTier(tier: number): number {
+  // Progressive defense scaling
+  // T1: 150, T2: 300, T3: 600, T4: 1200, T5: 2400, T6: 4800, T7: 9600
+  const baseDefense = 100 + (tier * 50);
+  const scalingFactor = Math.pow(2, tier - 1); // Exponential: 1, 2, 4, 8, 16, 32, 64
+  return Math.floor(baseDefense * scalingFactor * 0.1); // Scale down by 0.1 to get reasonable values
+}
+
+/**
+ * Get approximate player level for bot tier
+ * Matches tier-to-level bracket mapping
+ * 
+ * @param tier Bot tier (1-7)
+ * @returns Player level
+ */
+function getPlayerLevelForTier(tier: number): number {
+  const levelBrackets = {
+    1: 5,   // T1: Level 1-10 → avg 5
+    2: 15,  // T2: Level 11-20 → avg 15
+    3: 25,  // T3: Level 21-30 → avg 25
+    4: 35,  // T4: Level 31-40 → avg 35
+    5: 45,  // T5: Level 41-50 → avg 45
+    6: 55,  // T6: Level 51-60 → avg 55
+    7: 65   // T7: Level 61+ → avg 65
+  };
+  return levelBrackets[tier as keyof typeof levelBrackets] || tier * 10;
+}
+
+/**
+ * Create Boss Bot at specific location
+ * Elite rare spawn with extreme stats for end-game challenge
+ * 
+ * @param x - Map X coordinate for boss spawn
+ * @param y - Map Y coordinate for boss spawn
+ * @param zone - Zone number (optional, defaults to zone based on coordinates)
+ * @returns Boss bot player object
+ * 
+ * @example
+ * // Spawn boss at coordinates (75, 75) in Zone 4
+ * const boss = await createBossBot(75, 75);
+ * // Boss stats: 200K+ defense, 4-6M resources, Tier 7, Legendary reputation
+ * 
+ * NEW: Phase 7 - Elite boss bot system for coordinated attacks
+ */
+export async function createBossBot(
+  x: number,
+  y: number,
+  zone: number | null = null
+): Promise<Partial<Player>> {
+  const targetZone = zone ?? Math.floor((x + y) / 33); // Auto-calculate zone if not provided
+  
+  const position: Position = { x, y };
+  const resourceRange = getResourceRange(BotSpecialization.Boss, 7); // Fixed Tier 7
+  const baseResources = Math.floor(Math.random() * (resourceRange.max - resourceRange.min + 1)) + resourceRange.min;
+  
+  const botConfig: BotConfig = {
+    specialization: BotSpecialization.Boss,
+    tier: 7, // Always Tier 7 (Level 61+)
+    lastGrowth: new Date(),
+    attackCooldown: new Date(),
+    isSpecialBase: false, // Bosses are NOT beer bases
+    defeatedCount: 0,
+    reputation: BotReputation.Legendary, // Start at Legendary (high visibility)
+    movement: 'stationary', // Bosses don't move
+    zone: targetZone,
+      lastResourceRegen: new Date(),
+      nestAffinity: null, // Bosses don't belong to nests
+      bountyValue: 5000000, // 5M bounty (10x normal Legendary bot)
+      permanentBase: true // Bosses are permanent high-value targets
+  };
+
+  const baseDefense = getBotDefenseForTier(7); // T7: 9,600 base defense
+  const defenseMultiplier = getDefenseMultiplier(BotSpecialization.Boss); // 20x multiplier
+  const totalDefense = Math.floor(baseDefense * defenseMultiplier); // 192,000 defense
+
+  const bossPlayer: Partial<Player> = {
+    username: `BOSS-${generateBotName()}`, // Prefix with BOSS for visibility
+    email: `boss-${Date.now()}@darkframe.bot`,
+      password: 'BOSS_ACCOUNT', // Bosses cannot log in
+    isBot: true,
+    level: 65, // Fixed Level 65 (higher than player max)
+    xp: 0,
+      base: position,
+      currentPosition: position,
+    resources: {
+      metal: baseResources,
+      energy: baseResources
+    },
+    bank: {
+      metal: 0,
+      energy: 0,
+      lastDeposit: null
+    },
+    rank: 7, // Maximum rank
+    inventory: {
+      items: [],
+      capacity: 0,
+      metalDiggerCount: 0,
+      energyDiggerCount: 0
+    },
+    gatheringBonus: { metalBonus: 0, energyBonus: 0 },
+    activeBoosts: { gatheringBoost: null, expiresAt: null },
+    shrineBoosts: [],
+    units: [],
+    totalStrength: 0,
+    totalDefense: totalDefense,
+    botConfig,
+    createdAt: new Date()
+  };
+
+  console.log(`👑 BOSS SPAWNED at (${x}, ${y}) Zone ${targetZone}: ${bossPlayer.username} | Defense: ${totalDefense.toLocaleString()} | Resources: ${baseResources.toLocaleString()}`);
+
+  return bossPlayer;
 }
 
 /**
@@ -443,11 +718,11 @@ export async function removeAllBeerBases(): Promise<number> {
  * @param count Number of Beer Bases to spawn
  * @returns Array of created Beer Base bots
  */
-export async function spawnBeerBases(count: number): Promise<Partial<Player>[]> {
+export async function createBeerBaseBots(count: number): Promise<Partial<Player>[]> {
   const beerBases: Partial<Player>[] = [];
   
   for (let i = 0; i < count; i++) {
-    const bot = await createBot(null, null, true);
+    const bot = await createBotPlayer(null, null, true);
     beerBases.push(bot);
   }
   

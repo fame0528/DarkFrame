@@ -41,6 +41,7 @@ export interface RankedPlayer {
   totalDefense: number;
   factoriesOwned: number;
   level?: number;
+  validatedReferrals?: number; // Number of validated referrals
 }
 
 /**

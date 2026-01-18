@@ -10,6 +10,7 @@ import { useState, useEffect } from 'react';
 import { useGameContext } from '@/context/GameContext';
 import { TerrainType, AttackResult, Factory } from '@/types';
 import { calculateUpgradeCost, getFactoryStats, formatFactoryLevel } from '@/lib/factoryUpgradeService';
+import { isTypingInInput } from '@/hooks/useKeyboardShortcut';
 
 interface FactoryButtonProps {
   onAttackResult?: (result: AttackResult) => void;
@@ -54,9 +55,20 @@ export default function FactoryButton({ onAttackResult }: FactoryButtonProps) {
     function handleKeyPress(event: KeyboardEvent) {
       if (isAttacking || isLoading) return;
       
+      // Ignore if typing in input field
+      if (isTypingInInput()) {
+        return;
+      }
+      
+      // Ignore if any modal is open
+      if (document.querySelector('[role="dialog"]') || document.querySelector('.modal-open')) {
+        return;
+      }
+      
       // R for factory attack
       if (event.key === 'r' || event.key === 'R') {
         event.preventDefault();
+        event.stopPropagation();
         handleAttack();
       }
     }

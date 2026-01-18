@@ -12,16 +12,27 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthenticatedUser } from '@/lib/authService';
 import clientPromise from '@/lib/mongodb';
+import {
+  withRequestLogging,
+  createRouteLogger,
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  createErrorResponse,
+  createErrorFromException,
+  ErrorCode,
+} from '@/lib';
 
-export async function GET(request: NextRequest) {
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.admin);
+
+export const GET = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('admin/tiles');
+  const endTimer = log.time('get-tiles');
+
   try {
     // Admin authentication
     const user = await getAuthenticatedUser();
     if (!user || !user.rank || user.rank < 5) {
-      return NextResponse.json(
-        { success: false, error: 'Admin access required' },
-        { status: 403 }
-      );
+      return createErrorResponse(ErrorCode.ADMIN_ACCESS_REQUIRED, 'Admin access required (rank 5+)');
     }
 
     const client = await clientPromise;
@@ -47,6 +58,8 @@ export async function GET(request: NextRequest) {
       discoveredBy: tile.discoveredBy || []
     }));
 
+    log.info('Tiles retrieved', { totalTiles: transformedTiles.length });
+
     return NextResponse.json({
       success: true,
       tiles: transformedTiles,
@@ -54,16 +67,12 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Tiles fetch error:', error);
-    return NextResponse.json(
-      { 
-        success: false, 
-        error: error instanceof Error ? error.message : 'Failed to fetch tiles'
-      },
-      { status: 500 }
-    );
+    log.error('Failed to fetch tiles', error instanceof Error ? error : new Error(String(error)));
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * 📝 IMPLEMENTATION NOTES:

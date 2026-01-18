@@ -22,6 +22,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyAuth } from '@/lib/authMiddleware';
 import { chooseSpecialization, SpecializationDoctrine, SPECIALIZATION_CONFIG } from '@/lib/specializationService';
 import { logger } from '@/lib/logger';
+import { 
+  withRequestLogging, 
+  createRouteLogger, 
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  ChooseSpecializationSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.STANDARD);
 
 /**
  * POST /api/specialization/choose
@@ -31,73 +45,51 @@ import { logger } from '@/lib/logger';
  * @body doctrine - Chosen specialization doctrine ('offensive', 'defensive', or 'tactical')
  * @returns Specialization status and confirmation
  */
-export async function POST(req: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (req: NextRequest) => {
+  const log = createRouteLogger('SpecializationChooseAPI');
+  const endTimer = log.time('chooseSpecialization');
+
   try {
     // Verify authentication
     const user = await verifyAuth();
     if (!user || !user.username) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized. Please log in.' },
-        { status: 401 }
-      );
+      log.warn('Unauthenticated specialization choice attempt');
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Unauthorized. Please log in.'
+      });
     }
 
     const username = user.username;
 
-    // Parse request body
-    let body;
-    try {
-      body = await req.json();
-    } catch (error) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid request body' },
-        { status: 400 }
-      );
-    }
-
-    const { doctrine } = body;
-
-    // Validate doctrine parameter
-    if (!doctrine || typeof doctrine !== 'string') {
-      return NextResponse.json(
-        { success: false, error: 'Doctrine is required' },
-        { status: 400 }
-      );
-    }
+    // Parse and validate request body
+    const body = await req.json();
+    const validated = ChooseSpecializationSchema.parse(body);
 
     // Normalize doctrine to enum value
-    const normalizedDoctrine = doctrine.toLowerCase() as SpecializationDoctrine;
+    const normalizedDoctrine = validated.doctrine as SpecializationDoctrine;
 
-    // Validate doctrine is a valid choice
-    const validDoctrines = [
-      SpecializationDoctrine.Offensive,
-      SpecializationDoctrine.Defensive,
-      SpecializationDoctrine.Tactical
-    ];
-
-    if (!validDoctrines.includes(normalizedDoctrine)) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Invalid doctrine. Must be one of: ${validDoctrines.join(', ')}`
-        },
-        { status: 400 }
-      );
-    }
+    log.debug('Specialization choice request', { 
+      username, 
+      doctrine: normalizedDoctrine 
+    });
 
     // Attempt to choose specialization
     const result = await chooseSpecialization(username, normalizedDoctrine);
 
     if (!result.success) {
-      return NextResponse.json(
-        { success: false, error: result.message },
-        { status: 400 }
-      );
+      log.debug('Specialization choice failed', { 
+        username, 
+        doctrine: normalizedDoctrine,
+        reason: result.message 
+      });
+      return createErrorResponse(ErrorCode.VALIDATION_FAILED, {
+        message: result.message
+      });
     }
 
     const config = SPECIALIZATION_CONFIG[normalizedDoctrine as keyof typeof SPECIALIZATION_CONFIG];
 
-    logger.success('Specialization chosen successfully', {
+    log.info('Specialization chosen successfully', {
       username,
       doctrine: normalizedDoctrine,
       rpSpent: config.unlockCost,
@@ -121,16 +113,17 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (error) {
-    logger.error('Error in specialization choose endpoint:', { error });
-    return NextResponse.json(
-      {
-        success: false,
-        error: 'An error occurred while choosing specialization'
-      },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      log.warn('Specialization choice validation failed', { issues: error.issues });
+      return createValidationErrorResponse(error);
+    }
+
+    log.error('Specialization choice error', error as Error);
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * GET /api/specialization/choose

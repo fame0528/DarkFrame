@@ -19,6 +19,8 @@
 
 import { useState, useEffect } from 'react';
 import { useGameContext } from '@/context/GameContext';
+import { formatNumberAbbreviated } from '@/utils/formatting';
+import { isTypingInInput } from '@/hooks/useKeyboardShortcut';
 
 interface BeerBase {
   username: string;
@@ -104,8 +106,9 @@ export default function BeerBasePanel() {
   // Keyboard handler
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return; // Don't trigger if typing in an input
+      // Don't trigger if user is typing in an input
+      if (isTypingInInput()) {
+        return;
       }
 
       if (e.key.toUpperCase() === hotkeyConfig && !e.ctrlKey && !e.altKey && !e.shiftKey) {
@@ -206,13 +209,6 @@ export default function BeerBasePanel() {
       default:
         return sorted;
     }
-  };
-
-  // Format number with K/M suffix
-  const formatNumber = (num: number): string => {
-    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
-    return num.toString();
   };
 
   if (!isOpen) return null;
@@ -329,15 +325,15 @@ export default function BeerBasePanel() {
                     </div>
                     <div>
                       <div className="text-gray-400 text-xs">Army Size</div>
-                      <div className="font-bold text-white">{formatNumber(base.armySize)} units</div>
+                      <div className="font-bold text-white">{formatNumberAbbreviated(base.armySize)} units</div>
                     </div>
                     <div>
                       <div className="text-gray-400 text-xs">Strength</div>
-                      <div className="font-bold text-red-400">{formatNumber(base.totalStrength)}</div>
+                      <div className="font-bold text-red-400">{formatNumberAbbreviated(base.totalStrength)}</div>
                     </div>
                     <div>
                       <div className="text-gray-400 text-xs">Defense</div>
-                      <div className="font-bold text-blue-400">{formatNumber(base.totalDefense)}</div>
+                      <div className="font-bold text-blue-400">{formatNumberAbbreviated(base.totalDefense)}</div>
                     </div>
                   </div>
 
@@ -345,11 +341,11 @@ export default function BeerBasePanel() {
                     <div className="text-sm">
                       <span className="text-gray-400">Loot: </span>
                       <span className="text-cyan-400 font-bold">
-                        {formatNumber(base.resources.metal)} 🔩
+                        {formatNumberAbbreviated(base.resources.metal)} 🔩
                       </span>
                       <span className="text-gray-400"> + </span>
                       <span className="text-yellow-400 font-bold">
-                        {formatNumber(base.resources.energy)} ⚡
+                        {formatNumberAbbreviated(base.resources.energy)} ⚡
                       </span>
                     </div>
                     <button
@@ -382,9 +378,9 @@ export default function BeerBasePanel() {
                 <div className="bg-gray-800 p-4 rounded border border-gray-700">
                   <p className="text-sm text-gray-400 mb-2">Rewards:</p>
                   <div className="space-y-1">
-                    <p className="text-cyan-400">Metal: +{formatNumber(attackResult.rewards.metal)} 🔩</p>
-                    <p className="text-yellow-400">Energy: +{formatNumber(attackResult.rewards.energy)} ⚡</p>
-                    <p className="text-purple-400">XP: +{formatNumber(attackResult.rewards.experience)}</p>
+                    <p className="text-cyan-400">Metal: +{formatNumberAbbreviated(attackResult.rewards.metal)} 🔩</p>
+                    <p className="text-yellow-400">Energy: +{formatNumberAbbreviated(attackResult.rewards.energy)} ⚡</p>
+                    <p className="text-purple-400">XP: +{formatNumberAbbreviated(attackResult.rewards.experience)}</p>
                   </div>
                 </div>
               )}
@@ -402,3 +398,4 @@ export default function BeerBasePanel() {
     </div>
   );
 }
+

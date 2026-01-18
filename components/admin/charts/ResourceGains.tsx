@@ -17,6 +17,7 @@
 'use client';
 
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { formatNumberAbbreviated } from '@/utils/formatting';
 
 interface ResourceGainsProps {
   data: Array<{
@@ -42,13 +43,6 @@ export default function ResourceGains({ data, period, loading, error }: Resource
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   };
 
-  // Format large numbers
-  const formatNumber = (num: number) => {
-    if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-    if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
-    return num.toString();
-  };
-
   // Custom tooltip
   const CustomTooltip = ({ active, payload }: any) => {
     if (!active || !payload || !payload.length) return null;
@@ -68,16 +62,16 @@ export default function ResourceGains({ data, period, loading, error }: Resource
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 rounded-full bg-blue-500"></div>
             <span className="text-gray-400 text-sm">Metal:</span>
-            <span className="text-white font-semibold">{formatNumber(data.metal)}</span>
+            <span className="text-white font-semibold">{formatNumberAbbreviated(data.metal)}</span>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
             <span className="text-gray-400 text-sm">Energy:</span>
-            <span className="text-white font-semibold">{formatNumber(data.energy)}</span>
+            <span className="text-white font-semibold">{formatNumberAbbreviated(data.energy)}</span>
           </div>
           <div className="flex items-center gap-2 pt-1 border-t border-gray-700">
             <span className="text-gray-400 text-sm">Total:</span>
-            <span className="text-white font-semibold">{formatNumber(data.total)}</span>
+            <span className="text-white font-semibold">{formatNumberAbbreviated(data.total)}</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-gray-400 text-sm">Sessions:</span>
@@ -145,7 +139,7 @@ export default function ResourceGains({ data, period, loading, error }: Resource
           <YAxis 
             stroke="#9ca3af"
             tick={{ fill: '#9ca3af' }}
-            tickFormatter={formatNumber}
+            tickFormatter={formatNumberAbbreviated}
             label={{ value: 'Resources', angle: -90, position: 'insideLeft', fill: '#9ca3af' }}
           />
           <Tooltip content={<CustomTooltip />} />
@@ -205,3 +199,4 @@ export default function ResourceGains({ data, period, loading, error }: Resource
  * - MonotoneArea type for smooth interpolation
  * - Number formatting for readability (K/M suffixes)
  */
+

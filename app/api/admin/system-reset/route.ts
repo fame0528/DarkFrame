@@ -33,44 +33,59 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getCollection } from '@/lib/mongodb';
+import { 
+  withRequestLogging, 
+  createRouteLogger, 
+  createRateLimiter,
+  ENDPOINT_RATE_LIMITS,
+  SystemResetSchema,
+  createErrorResponse,
+  createErrorFromException,
+  createValidationErrorResponse,
+  ErrorCode
+} from '@/lib';
+import { ZodError } from 'zod';
+
+const rateLimiter = createRateLimiter(ENDPOINT_RATE_LIMITS.ADMIN_OPERATIONS);
 
 /**
  * POST handler - Execute system reset
  * 
- * Admin-only endpoint that performs irreversible data deletion operations.
- * All actions are logged to adminLogs collection.
+ * ⚠️ DANGEROUS: Admin-only endpoint that performs irreversible data deletion.
+ * All actions are logged to adminLogs collection for audit trail.
  */
-export async function POST(request: NextRequest) {
+export const POST = withRequestLogging(rateLimiter(async (request: NextRequest) => {
+  const log = createRouteLogger('AdminSystemResetAPI');
+  const endTimer = log.time('systemReset');
+
   try {
     // Check admin authentication
     const { getAuthenticatedUser } = await import('@/lib/authMiddleware');
     const user = await getAuthenticatedUser();
 
     if (!user) {
-      return NextResponse.json(
-        { success: false, error: 'Not authenticated' },
-        { status: 401 }
-      );
+      log.warn('Unauthenticated system reset attempt');
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Not authenticated'
+      });
     }
 
     // Check admin access (isAdmin flag required)
     if (user.isAdmin !== true) {
-      return NextResponse.json(
-        { success: false, error: 'Access denied - Admin only' },
-        { status: 403 }
-      );
+      log.warn('Non-admin system reset attempt', { username: user.username });
+      return createErrorResponse(ErrorCode.AUTH_UNAUTHORIZED, {
+        message: 'Access denied - Admin only'
+      });
     }
 
-    // Parse request body
+    // Parse and validate request
     const body = await request.json();
-    const { action } = body;
+    const validated = SystemResetSchema.parse(body);
 
-    if (!action || typeof action !== 'string') {
-      return NextResponse.json(
-        { error: 'Action parameter is required' },
-        { status: 400 }
-      );
-    }
+    log.warn('DANGEROUS: System reset initiated', { 
+      action: validated.action, 
+      adminUsername: user.username 
+    });
 
     // Get admin logs collection for audit trail
     const adminLogsCollection = await getCollection('adminLogs');
@@ -80,7 +95,7 @@ export async function POST(request: NextRequest) {
     let actionType = '';
 
     // Execute the requested action
-    switch (action) {
+    switch (validated.action) {
       case 'clear-battle-logs': {
         const battleLogsCollection = await getCollection('battleLogs');
         const result = await battleLogsCollection.deleteMany({});
@@ -116,25 +131,26 @@ export async function POST(request: NextRequest) {
         actionType = 'CLEAR_ALL_SESSIONS';
         break;
       }
-
-      default:
-        return NextResponse.json(
-          { error: `Unknown action: ${action}` },
-          { status: 400 }
-        );
     }
 
-    // Log the admin action
+    // Log the admin action for audit trail
     await adminLogsCollection.insertOne({
       timestamp: new Date(),
       adminUsername: user.username,
       actionType,
       targetUsername: 'SYSTEM',
       details: {
-        action,
+        action: validated.action,
         deletedCount,
         message,
       },
+    });
+
+    log.warn('System reset completed', { 
+      action: validated.action, 
+      deletedCount, 
+      actionType,
+      adminUsername: user.username 
     });
 
     return NextResponse.json({
@@ -142,14 +158,19 @@ export async function POST(request: NextRequest) {
       message,
       deletedCount,
     });
+
   } catch (error) {
-    console.error('[AdminSystemReset] Failed:', error);
-    return NextResponse.json(
-      { error: 'System reset failed' },
-      { status: 500 }
-    );
+    if (error instanceof ZodError) {
+      log.warn('System reset validation failed', { issues: error.issues });
+      return createValidationErrorResponse(error);
+    }
+
+    log.error('System reset failed', error as Error);
+    return createErrorFromException(error, ErrorCode.INTERNAL_ERROR);
+  } finally {
+    endTimer();
   }
-}
+}));
 
 /**
  * IMPLEMENTATION NOTES:
